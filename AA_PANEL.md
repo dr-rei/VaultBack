@@ -28,7 +28,7 @@ For this repository, use:
 
 | Git pull field | Value |
 |---|---|
-| Repository | `git@github.com:dr-rei/backup-system.git` |
+| Repository | `git@github.com:dr-rei/VaultBack.git` |
 | Branch | `main` |
 | Pull directory | `/www/wwwroot/vaultback` |
 
