@@ -185,7 +185,7 @@ Schedules support three layouts:
 
 - **Single SQL file** keeps the original `.sql`, `.sql.gz`, or optional `.zip` artifact behavior.
 - **One SQL file per database** creates a ZIP containing `DatabaseName/DatabaseName.sql` for every selected or visible database.
-- **One SQL file per table** creates a ZIP containing `DatabaseName/TableName.sql` for every table in every selected or visible database. The schedule option **Separate table schema into its own SQL file** instead creates `DatabaseName/TableName.schema.sql` and `DatabaseName/TableName.data.sql`; the schema file is stored first so restores create the table before loading rows.
+- **One SQL file per table** creates a ZIP containing `DatabaseName/TableName.sql` for every base table in every selected or visible database. Views are skipped in this layout because MariaDB/MySQL clients do not reliably dump a view through the table-specific command; single-file and per-database layouts continue to include views. The schedule option **Separate table schema into its own SQL file** instead creates `DatabaseName/TableName.schema.sql` and `DatabaseName/TableName.data.sql`; the schema file is stored first so restores create the table before loading rows.
 
 The split layouts always use ZIP compression. ZIP backups can be downloaded, verified, and restored through the normal Backup history workflow. Existing single-file schedules remain unchanged.
 

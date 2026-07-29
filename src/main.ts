@@ -89,10 +89,13 @@ async function bootstrap() {
     const safe = candidate === publicRoot || candidate.startsWith(`${publicRoot}${path.sep}`);
     const fileExists = safe && fs.existsSync(candidate) && fs.statSync(candidate).isFile();
     if (fileExists) {
-      return reply.type(mime[path.extname(candidate).toLowerCase()] || 'application/octet-stream').send(fs.readFileSync(candidate));
+      const extension = path.extname(candidate).toLowerCase();
+      if (['.html', '.js', '.css'].includes(extension)) reply.header('Cache-Control', 'no-store, max-age=0');
+      return reply.type(mime[extension] || 'application/octet-stream').send(fs.readFileSync(candidate));
     }
     if (normalizedPath.startsWith('/api/')) return reply.code(404).send({ message: 'Not found' });
     const index = fs.readFileSync(path.join(publicRoot, 'index.html'));
+    reply.header('Cache-Control', 'no-store, max-age=0');
     if (frontendRoutes.has(normalizedPath)) return reply.type(mime['.html']).send(index);
     return reply.code(404).type(mime['.html']).send(index);
   });
