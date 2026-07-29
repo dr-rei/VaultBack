@@ -12,6 +12,7 @@
     "start": "node dist/main.js",
     "start:dev": "tsx watch src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "deploy:pm2": "npm ci && npm run build && pm2 restart vaultback --update-env",
     "reset-data": "node scripts/reset-data.mjs",
     "reset-admin": "node scripts/reset-admin.mjs"
   },

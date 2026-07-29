@@ -124,7 +124,7 @@ Use the **PM2 Project** tab shown in aaPanel:
 
 If aaPanel asks to install dependencies automatically, leave **Do not install node_module** unchecked on the first deployment. The preparation script runs `npm ci` and `npm run build`; after those commands complete, the project is ready to start with `dist/main.js`.
 
-If you already ran the preparation script successfully, selecting **Do not install node_module** is acceptable because `node_modules/` and `dist/` are already present. If you pull a new release later, run `npm ci` and `npm run build` again before restarting PM2.
+If you already ran the preparation script successfully, selecting **Do not install node_module** is acceptable because `node_modules/` and `dist/` are already present. If you pull a new release later, run `npm run deploy:pm2` from the project directory. This installs dependencies, builds `dist/main.js`, and restarts the existing `vaultback` PM2 process.
 
 Alternatively, start the included PM2 configuration from the terminal:
 
@@ -236,9 +236,7 @@ Never expose `.env`, `data/vaultback.sqlite`, `.encryption-key`, or local backup
 cd /www/wwwroot/vaultback
 cp -a data "data-before-update-$(date +%Y%m%d-%H%M%S)"
 git pull                         # or upload the new release files
-npm ci
-npm run build
-pm2 restart vaultback --update-env
+npm run deploy:pm2
 pm2 save
 ~~~
 

@@ -418,6 +418,10 @@ The Node process is not allowed to launch child processes. Run VaultBack under a
 
 Current VaultBack commands use `--no-defaults` and should not read incompatible option-file entries. Rebuild and restart the application after upgrading.
 
+### `caching_sha2_password could not be loaded`
+
+The bundled client must load its authentication plugins from the application directory. Current releases pass the portable `lib/plugin` directory explicitly to the client and dump commands. Pull the latest code, run `npm run deploy:pm2`, and use **Settings â†’ Database tools â†’ Repair and redownload tools** if the portable package is incomplete. Do not copy a system client over the managed tools.
+
 ### Connection test fails
 
 - Confirm the database server is running.
@@ -464,4 +468,7 @@ npm run start:dev   # watch mode
 npm run typecheck   # typecheck without emitting dist
 npm run build       # compile to dist/
 npm start           # run the compiled application
+npm run deploy:pm2  # install, build, and restart the existing PM2 process
 ~~~
+
+For an existing aaPanel/PM2 deployment, pull the latest code and run `npm run deploy:pm2` from the project directory. The command stops on the first failure. It expects a PM2 process named `vaultback`; create that process once through aaPanel or `pm2 start ecosystem.config.cjs` before using this update command.
