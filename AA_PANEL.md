@@ -20,15 +20,27 @@ VaultBack uses SQLite for its own control-plane data. You do not need to create 
 
 In aaPanel, open **App Store → Node.js version manager** and install Node.js 22 or newer. The Node version selected for the project must be the same version used to build and run the application.
 
-### 2. Upload the project
+### 2. Upload or pull the project
 
-Upload the project ZIP or clone the repository into:
+You can upload a release ZIP, or use aaPanel’s **Pull Git project** button from the PM2 Project form shown in your screenshot.
+
+For this repository, use:
+
+| Git pull field | Value |
+|---|---|
+| Repository | `git@github.com:dr-rei/backup-system.git` |
+| Branch | `main` |
+| Pull directory | `/www/wwwroot/vaultback` |
+
+If the repository is private, click **Generate new key** (or use an existing aaPanel key), copy the displayed public SSH key, and add it to GitHub as a repository deploy key with read access. Never upload or paste the private key into GitHub. For a public repository, an HTTPS clone URL can also be used if aaPanel supports it.
+
+The project directory must contain:
 
 ~~~text
 /www/wwwroot/vaultback
 ~~~
 
-The directory should contain `package.json`, `src/`, `public/`, `tools/`, and `ecosystem.config.cjs`.
+After the pull or upload, confirm it contains `package.json`, `src/`, `public/`, `tools/`, and `ecosystem.config.cjs` before creating the PM2 project.
 
 ### 3. Prepare the project
 
@@ -110,7 +122,9 @@ Use the **PM2 Project** tab shown in aaPanel:
 | Auto Restart | On |
 | Package Manager | `npm` |
 
-If aaPanel asks to install dependencies automatically, allow it only after the project files are uploaded. The preparation script already ran `npm ci` and `npm run build`; do not select “Do not install node_module” unless you have already completed those commands.
+If aaPanel asks to install dependencies automatically, leave **Do not install node_module** unchecked on the first deployment. The preparation script runs `npm ci` and `npm run build`; after those commands complete, the project is ready to start with `dist/main.js`.
+
+If you already ran the preparation script successfully, selecting **Do not install node_module** is acceptable because `node_modules/` and `dist/` are already present. If you pull a new release later, run `npm ci` and `npm run build` again before restarting PM2.
 
 Alternatively, start the included PM2 configuration from the terminal:
 
