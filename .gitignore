@@ -1,0 +1,16 @@
+node_modules/
+dist/
+data/
+# Generated local database backup artifacts
+backups/
+**/backups/
+*.sql
+*.sql.gz
+.env
+*.log
+.npm-cache/
+# Third-party portable database clients are supplied and managed at runtime.
+# Keep the whole extracted pack local while retaining the empty bin placeholder.
+tools/**/*
+!tools/**/bin/
+!tools/**/bin/.gitkeep
