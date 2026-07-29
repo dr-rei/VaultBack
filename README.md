@@ -47,7 +47,7 @@ The command prompts for a new username and password, then asks you to type `RESE
 ## Included operational features
 
 - Scheduled MySQL/MariaDB backups with all-database or live database checklist selection.
-- GZIP compression, optional AES-256-GCM backup-file encryption, retention rotation, checksums, and archive/content verification.
+- GZIP or ZIP compression, per-database and per-table ZIP layouts, optional AES-256-GCM backup-file encryption, retention rotation, checksums, and archive/content verification.
 - Local, FTP/FTPS, WebDAV/Synology, Google Drive, and OneDrive destinations.
 - Google and Microsoft OAuth refresh-token support for unattended cloud schedules.
 - Backup success/failure/capacity notifications through Discord, Telegram, or HTTPS webhooks.
@@ -178,6 +178,16 @@ Open **Backup history** and choose **Restore** on a successful backup. Restore i
 - **Restore as a new database name**: available when the backup contains exactly one database. Enter a name using letters, numbers, and underscores. If that name already exists, VaultBack requires the same overwrite acknowledgment.
 
 The restore process downloads the artifact from its configured storage target, decrypts/decompresses it when required, and passes it to the selected bundled MySQL/MariaDB client. It does not modify the source database connection. Always test a restore on an isolated server before relying on disaster recovery.
+
+### Backup layouts
+
+Schedules support three layouts:
+
+- **Single SQL file** keeps the original `.sql`, `.sql.gz`, or optional `.zip` artifact behavior.
+- **One SQL file per database** creates a ZIP containing `DatabaseName/DatabaseName.sql` for every selected or visible database.
+- **One SQL file per table** creates a ZIP containing `DatabaseName/TableName.sql` for every table in every selected or visible database. The schedule option **Separate table schema into its own SQL file** instead creates `DatabaseName/TableName.schema.sql` and `DatabaseName/TableName.data.sql`; the schema file is stored first so restores create the table before loading rows.
+
+The split layouts always use ZIP compression. ZIP backups can be downloaded, verified, and restored through the normal Backup history workflow. Existing single-file schedules remain unchanged.
 
 ## Windows deployment with Laragon
 
@@ -338,7 +348,7 @@ Do not publish the container directly to the public internet. Use an HTTPS rever
 7. Open **Storage targets** and add a local, FTP/FTPS, WebDAV/Synology, Google Drive, or OneDrive destination.
 8. Open **Schedules** and choose the database connection and storage target.
 9. Choose **All databases** or **Selected databases**. Selected mode loads a checklist from the live database connection.
-10. Configure cron expression, timezone, compression, filename prefix, and retention count.
+10. Choose a backup layout and configure cron expression, timezone, compression, filename prefix, and retention count. For the per-table layout, optionally enable **Separate table schema into its own SQL file** when you want table definitions and row data as separate ZIP entries.
 11. Save the schedule and use **Run now** for an initial backup test.
 12. Confirm the artifact exists at the destination and inspect **Backup history**.
 

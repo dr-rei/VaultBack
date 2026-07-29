@@ -31,10 +31,12 @@ export interface BackupJob {
   storageTargetId: string;
   databaseScope: 'all' | 'selected';
   databases: string[];
+  backupLayout: 'single' | 'database' | 'table';
+  tableSchemaSeparate: boolean;
   cronExpression: string;
   timezone: string;
   enabled: boolean;
-  compression: 'none' | 'gzip';
+  compression: 'none' | 'gzip' | 'zip';
   retentionCount: number;
   filenamePrefix: string;
   nextRunAt: string | null;

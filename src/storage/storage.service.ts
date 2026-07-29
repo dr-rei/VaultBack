@@ -88,8 +88,22 @@ export class StorageService {
   async rotate(target: StorageTarget, prefix: string, retentionCount: number) {
     if (retentionCount < 1) return;
     if (target.type === 'local') {
-      const dir = this.localDir(target); const files = fs.readdirSync(dir).filter(file => file.startsWith(prefix)).sort().reverse();
-      for (const file of files.slice(retentionCount)) fs.rmSync(path.join(dir, file));
+      const dir = this.localDir(target);
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch (error: any) {
+        if (error?.code === 'ENOENT') return;
+        throw error;
+      }
+      const files = entries.filter(entry => entry.isFile() && entry.name.startsWith(prefix)).map(entry => entry.name).sort().reverse();
+      for (const file of files.slice(retentionCount)) {
+        try {
+          fs.rmSync(path.join(dir, file), { force: true });
+        } catch (error: any) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
+      }
     }
   }
 
@@ -112,7 +126,7 @@ export class StorageService {
   }
 
   private validateFilename(filename: string) { if (!filename || path.basename(filename) !== filename || /[\\/\0]/.test(filename)) throw new BadRequestException('Invalid backup filename'); }
-  private uploadLocal(target: StorageTarget, localFile: string, filename: string) { const dir = this.localDir(target); ensureDirectory(dir); const destination = path.join(dir, filename); fs.copyFileSync(localFile, destination); return { location: destination }; }
+  private uploadLocal(target: StorageTarget, localFile: string, filename: string) { const dir = this.localDir(target); ensureDirectory(dir); const destination = path.join(dir, filename); try { fs.copyFileSync(localFile, destination); } catch (error: any) { if (error?.code === 'ENOENT') throw new BadRequestException('The temporary backup file is no longer available to upload'); throw error; } return { location: destination }; }
   private localDir(target: StorageTarget) { const requested = String(target.config.path || ''); if (!requested) throw new Error('Local storage path is required'); const root = path.resolve(this.store.dataDir, 'backups'); const dir = path.resolve(requested); if (process.env.ALLOW_ANY_LOCAL_PATH !== 'true' && !isWithin(root, dir)) throw new Error(`Local paths must be inside ${root}`); return dir; }
   private ftpConfig(target: StorageTarget) { const c = target.config as any; return { host: String(c.host), port: Number(c.port || 21), user: String(c.username), password: String(c.password), secure: Boolean(c.secure) }; }
   private ftpRemotePath(target: StorageTarget, filename: string) { return `${String((target.config as any).remotePath || '').replace(/\\/g, '/').replace(/\/$/, '')}/${filename}`.replace(/^\//, '/'); }
