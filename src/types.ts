@@ -32,7 +32,6 @@ export interface BackupJob {
   databaseScope: 'all' | 'selected';
   databases: string[];
   backupLayout: 'single' | 'database' | 'table';
-  tableSchemaSeparate: boolean;
   cronExpression: string;
   timezone: string;
   enabled: boolean;
