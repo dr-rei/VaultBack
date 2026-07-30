@@ -4672,6 +4672,18 @@ html[data-theme="dark"] body .wizard-step b {
   gap: 22px;
 }
 
+.session-actions-panel .session-action-grid:has(> .session-action-block:only-child) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-restart-panel {
+  margin-bottom: 20px;
+}
+
+.settings-restart-panel .session-restart-block {
+  min-height: 0;
+}
+
 .session-action-block {
   display: flex;
   min-width: 0;

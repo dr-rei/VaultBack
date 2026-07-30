@@ -920,10 +920,27 @@ if ($('#logout')) $('#logout').onclick = async () => {
 
 // User management policy: the first account is immutable, administrator
 // accounts are peer-protected, and only lower-role accounts can be managed.
+function ensureRestartPanel() {
+  const restartBlock = $('#view-sessions .session-restart-block');
+  const settingsView = $('#view-settings');
+  if (!restartBlock || !settingsView) return;
+  let panel = $('#restart-panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'restart-panel';
+    panel.className = 'panel settings-restart-panel admin-only-setting hidden';
+    panel.appendChild(restartBlock);
+    settingsView.insertBefore(panel, settingsView.querySelector('.admin-panel'));
+  }
+}
+
+ensureRestartPanel();
+
 var vaultbackBaseRenderSettings = function() {
   const isAdmin = state.role === 'admin';
   $('#admin-permission-note').classList.toggle('hidden', isAdmin);
   $('#new-user').classList.toggle('hidden', !isAdmin);
+  $('#restart-panel')?.classList.toggle('hidden', !isAdmin);
   $('#user-list').innerHTML = '';
   $('#capacity-list').innerHTML = state.capacity.map(item => `<div class="capacity-row"><div><b>${esc(item.name)}</b><small>${formatCapacity(item.freeBytes)} free of ${formatCapacity(item.totalBytes)}</small></div><strong class="capacity-value ${item.usedPercent >= 85 ? 'warning' : ''}">${item.usedPercent === null ? '—' : `${item.usedPercent}% used`}</strong></div>`).join('') || '<div class="empty">Capacity information is unavailable.</div>';
   const notification = state.notifications || {};

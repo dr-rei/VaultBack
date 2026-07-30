@@ -244,7 +244,7 @@ Windows administrators can download and run `scripts/install-release.ps1` from P
 
 ### Restarting from the GUI
 
-Administrators can open **Sessions & security** and choose **Restart application**. VaultBack returns an accepted response, waits briefly, and then sends itself `SIGTERM` for a graceful shutdown. The button is therefore a supervisor-triggered restart, not a self-relaunching Node process. It works with the included PM2 configuration, aaPanel/PM2, Docker with `--restart unless-stopped`, or systemd with `Restart=on-failure`. A plain `node dist/main.js` or `npm start` process will stop and must be started again manually if no process manager is supervising it. Do not use the control during an active backup.
+Administrators can open **Settings** and choose **Restart application**. VaultBack returns an accepted response, waits briefly, and then sends itself `SIGTERM` for a graceful shutdown. The button is therefore a supervisor-triggered restart, not a self-relaunching Node process. It works with the included PM2 configuration, aaPanel/PM2, Docker with `--restart unless-stopped`, or systemd with `Restart=on-failure`. A plain `node dist/main.js` or `npm start` process will stop and must be started again manually if no process manager is supervising it. Do not use the control during an active backup.
 
 Generate a stable encryption secret with:
 
