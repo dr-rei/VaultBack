@@ -3684,6 +3684,282 @@ html[data-theme="dark"] body td.empty {
   }
 }
 
+/* Overview operations snapshot */
+body .overview-hero {
+  margin-bottom: var(--surface-gap);
+}
+
+body .overview-metrics .metric {
+  min-height: 138px;
+}
+
+body .overview-metrics .metric strong {
+  font-size: clamp(24px, 2.5vw, 32px);
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+body .overview-health-card.is-attention {
+  border-color: #e4b8ad;
+  background: linear-gradient(145deg, #fffaf5, #fff0eb);
+}
+
+body .overview-operations-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(300px, .85fr);
+  gap: var(--surface-gap);
+  margin-bottom: var(--surface-gap);
+}
+
+body .overview-schedule-list {
+  display: grid;
+  gap: 0;
+}
+
+body .overview-schedule-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  border-bottom: 1px solid var(--ui-line-soft);
+}
+
+body .overview-schedule-row:last-child {
+  border-bottom: 0;
+}
+
+body .overview-schedule-dot,
+body .overview-latest-status .status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ui-teal);
+  box-shadow: 0 0 0 4px var(--ui-teal-soft);
+}
+
+body .overview-schedule-row b,
+body .overview-schedule-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body .overview-schedule-row b {
+  color: var(--ui-ink);
+  font-size: 12px;
+}
+
+body .overview-schedule-row small,
+body .overview-schedule-row time {
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+body .overview-schedule-row small {
+  margin-top: 4px;
+}
+
+body .overview-schedule-row time {
+  white-space: nowrap;
+  text-align: right;
+}
+
+body .overview-latest-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ui-teal);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+body .overview-latest-status time {
+  margin-left: auto;
+  color: var(--ui-muted);
+  font-size: 11px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+body .overview-latest-status.is-failed {
+  color: var(--refresh-coral);
+}
+
+body .overview-latest-status.is-failed .status-dot {
+  background: var(--refresh-coral);
+  box-shadow: 0 0 0 4px var(--ui-red-soft);
+}
+
+body .overview-latest-panel h4 {
+  margin: 19px 0 7px;
+  color: var(--ui-ink);
+  font-size: 16px;
+}
+
+body .overview-artifact {
+  margin: 0;
+  color: var(--ui-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body .overview-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 22px;
+}
+
+body .overview-detail-grid div {
+  padding: 11px 12px;
+  border: 1px solid var(--ui-line-soft);
+  border-radius: 10px;
+  background: var(--ui-surface-muted);
+}
+
+body .overview-detail-grid span,
+body .overview-detail-grid b {
+  display: block;
+}
+
+body .overview-detail-grid span {
+  margin-bottom: 5px;
+  color: var(--ui-muted);
+  font-size: 10px;
+}
+
+body .overview-detail-grid b {
+  color: var(--ui-ink);
+  font-size: 11px;
+}
+
+body .overview-error {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid #e4b8ad;
+  border-radius: 9px;
+  background: var(--ui-red-soft);
+  color: var(--refresh-coral);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+body .overview-empty {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+  min-height: 132px;
+  align-content: center;
+  color: var(--ui-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+body .overview-empty b {
+  color: var(--ui-ink);
+  font-size: 13px;
+}
+
+body .overview-empty .small-button {
+  margin-top: 6px;
+}
+
+body .activity-status {
+  margin-left: 5px;
+  color: var(--ui-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+body .activity-mark.running {
+  background: var(--ui-teal);
+  box-shadow: 0 0 0 4px var(--ui-teal-soft);
+}
+
+body button.check-row {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--ui-line-soft);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+body button.check-row:hover {
+  background: var(--ui-surface-muted);
+}
+
+body button.check-row > span:nth-child(2) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+body .check-arrow {
+  color: var(--ui-muted);
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity .16s ease, transform .16s ease;
+}
+
+body button.check-row:hover .check-arrow,
+body button.check-row:focus-visible .check-arrow {
+  opacity: 1;
+  transform: translateX(2px);
+}
+
+body .check-row.is-attention .check-icon {
+  color: var(--refresh-coral);
+  background: var(--ui-red-soft);
+}
+
+html[data-theme="dark"] body .overview-health-card.is-attention {
+  border-color: #80504b;
+  background: linear-gradient(145deg, #352b2a, #3c2929);
+}
+
+html[data-theme="dark"] body .overview-error {
+  border-color: #80504b;
+  color: #f2a39a;
+}
+
+@media (max-width: 900px) {
+  body .overview-operations-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  body .overview-schedule-row {
+    grid-template-columns: 10px minmax(0, 1fr);
+    padding: 11px 0;
+  }
+
+  body .overview-schedule-row time {
+    grid-column: 2;
+    text-align: left;
+  }
+
+  body .overview-latest-status {
+    flex-wrap: wrap;
+  }
+
+  body .overview-latest-status time {
+    width: 100%;
+    margin-left: 18px;
+  }
+
+  body .overview-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   body .sidebar,
   body .nav-item,

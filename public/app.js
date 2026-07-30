@@ -438,7 +438,78 @@ function renderConnections() { collectionControls('connections', 'connections-co
 function renderStorage() { collectionControls('storage', 'storage-controls', 'Search storage name or type'); const el = $('#storage-list'); const actions = state.role === 'admin' ? s => `<button class="small-button" onclick="testStorage('${s.id}')">Test</button><button class="small-button" onclick="editStorage('${s.id}')">Edit</button><button class="small-button danger" onclick="deleteStorage('${s.id}')">Delete</button>` : s => `<button class="small-button" onclick="testStorage('${s.id}')">Test</button><span class="hint">Administrator access is required to change credentials.</span>`; el.innerHTML = state.storage.map(s => `<article class="card"><div class="card-top"><div><h3>${esc(s.name)}</h3><p>${esc(storageDescription(s))}</p></div><span class="tag">${esc(s.type)}</span></div><div class="card-meta"><span>Credentials</span><b>Encrypted</b></div><div class="card-actions">${actions(s)}</div></article>`).join('') || '<div class="empty">No storage targets match this search.</div>'; renderCollectionPagination('storage', 'storage-pagination'); }
 function renderJobs() { collectionControls('jobs', 'jobs-controls', 'Search schedule, database, storage, or cron'); const el = $('#jobs-list'); const admin = state.role === 'admin'; el.innerHTML = state.jobs.map(j => { const db = state.connections.find(c => c.id === j.databaseConnectionId); const st = state.storage.find(s => s.id === j.storageTargetId); const configActions = admin ? `<button class="small-button" onclick="editJob('${j.id}')">Edit</button><button class="small-button danger" onclick="deleteJob('${j.id}')">Delete</button>` : ''; const layout = j.backupLayout === 'database' ? 'Per database' : j.backupLayout === 'table' ? 'Per table' : 'Single file'; const compression = j.compression === 'gzip' ? 'GZIP' : j.compression === 'zip' ? 'ZIP' : 'RAW'; return `<article class="card"><div class="card-top"><div><h3>${esc(j.name)}</h3><p>${esc(db?.name || 'Missing database')} → ${esc(st?.name || 'Missing target')}</p></div><span class="tag">${j.enabled ? 'ACTIVE' : 'PAUSED'}</span></div><div class="card-meta"><span>${esc(j.cronExpression)} · ${esc(j.timezone)}</span><b>${layout} · ${compression} · ${j.retentionCount} kept</b></div><div class="card-meta"><span>Protection</span><b>${j.backupEncryption === 'aes-256-gcm' ? 'AES-256-GCM' : 'Archive only'}</b></div><div class="card-meta"><span>Next run</span><b>${fmtDate(j.nextRunAt)}</b></div><div class="card-actions"><button class="small-button" onclick="runJob('${j.id}')">Run now</button><button class="small-button" id="job-runs-button-${j.id}" onclick="viewJobRuns('${j.id}')">View backups</button>${configActions}</div><div id="job-runs-${j.id}" class="job-runs hidden"></div></article>`; }).join('') || '<div class="empty">No schedules match this search.</div>'; renderCollectionPagination('jobs', 'jobs-pagination'); }
 
-function renderDashboard() { const jobsMeta = state.meta.jobs || {}; const runsMeta = state.meta.runs || {}; const success = runsMeta.successTotal ?? state.runs.filter(r => r.status === 'success').length; const failed = runsMeta.failedTotal ?? state.runs.filter(r => r.status === 'failed').length; $('#metric-jobs').textContent = jobsMeta.activeTotal ?? state.jobs.filter(j => j.enabled).length; $('#metric-success').textContent = success; $('#metric-failed').textContent = failed; const last = state.runs[0]; $('#metric-last').textContent = last ? fmtDate(last.startedAt).split(',')[0] : '—'; $('#metric-last-detail').textContent = last ? `${last.status} · ${fmtBytes(last.sizeBytes)}` : 'No runs recorded yet'; $('#recent-runs').innerHTML = state.runs.slice(0, 5).map(r => `<div class="activity"><span class="activity-mark ${r.status === 'failed' ? 'fail' : ''}"></span><div><b>${esc(r.jobName)}</b><small>${esc(r.filename || r.errorMessage || 'Running…')}</small></div><time>${fmtDate(r.startedAt)}</time></div>`).join('') || '<div class="empty">No backup runs yet. Create a schedule to get started.</div>'; const checks = [['connections', 'Connect a source database', state.connections.length > 0, 'Add MySQL or MariaDB credentials.'], ['storage', 'Choose a delivery target', state.storage.length > 0, 'Local, FTP, WebDAV, Google Drive, or OneDrive.'], ['jobs', 'Create an automated schedule', state.jobs.length > 0, 'Run a test backup before relying on it.']]; $('#readiness').innerHTML = checks.map(c => `<div class="check-row"><span class="check-icon">${c[2] ? '✓' : '→'}</span><div><h4>${c[2] ? 'Ready · ' : ''}${c[1]}</h4><p>${c[3]}</p></div></div>`).join(''); }
+function overviewDateLabel(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '—';
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const time = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (sameDay) return `Today ${time}`;
+  if (date.toDateString() === tomorrow.toDateString()) return `Tomorrow ${time}`;
+  return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${time}`;
+}
+
+function overviewStatusLabel(status) {
+  return status === 'success' ? 'Successful' : status === 'failed' ? 'Failed' : status === 'running' ? 'Running' : String(status || 'Unknown');
+}
+
+function renderDashboard() {
+  const jobsMeta = state.meta.jobs || {};
+  const storageMeta = state.meta.storage || {};
+  const runsMeta = state.meta.runs || {};
+  const totalJobs = Number(jobsMeta.total ?? state.jobs.length);
+  const activeJobs = Number(jobsMeta.activeTotal ?? state.jobs.filter(job => job.enabled).length);
+  const totalStorage = Number(storageMeta.total ?? state.storage.length);
+  const success = Number(runsMeta.successTotal ?? state.runs.filter(run => run.status === 'success').length);
+  const failed = Number(runsMeta.failedTotal ?? state.runs.filter(run => run.status === 'failed').length);
+  const running = state.runs.filter(run => run.status === 'running').length;
+  const activeSchedules = state.jobs.filter(job => job.enabled && job.nextRunAt).sort((a, b) => Date.parse(a.nextRunAt) - Date.parse(b.nextRunAt));
+  const nextJob = activeSchedules[0];
+  const latest = state.runs[0];
+  const health = failed > 0 ? 'Attention' : success > 0 ? 'Healthy' : 'Awaiting data';
+  const healthDetail = failed > 0 ? `${failed} failed run${failed === 1 ? '' : 's'} need review` : success > 0 ? `${success} successful run${success === 1 ? '' : 's'} recorded` : 'Run a schedule to verify delivery';
+  const headline = failed > 0 ? 'Backup attention required.' : !state.connections.length || !totalStorage || !totalJobs ? 'Complete your backup setup.' : !success ? 'Ready for your first backup.' : 'Backups are on track.';
+  const subtitle = failed > 0 ? 'Review the latest failure, confirm the destination is reachable, and retry when the cause is resolved.' : 'Monitor schedule coverage, delivery readiness, and the latest recovery point from one place.';
+
+  $('#overview-headline').textContent = headline;
+  $('#overview-subtitle').textContent = subtitle;
+  $('#metric-health').textContent = health;
+  $('#metric-health-detail').textContent = healthDetail;
+  $('.overview-health-card')?.classList.toggle('is-attention', failed > 0);
+  $('#metric-jobs').textContent = activeJobs;
+  $('#metric-jobs-detail').textContent = `${totalJobs} total schedule${totalJobs === 1 ? '' : 's'}`;
+  $('#metric-storage').textContent = totalStorage;
+  $('#metric-storage-detail').textContent = totalStorage ? 'configured delivery target' + (totalStorage === 1 ? '' : 's') : 'Add a destination to deliver backups';
+  $('#metric-next').textContent = nextJob ? overviewDateLabel(nextJob.nextRunAt) : '—';
+  $('#metric-next-detail').textContent = nextJob ? nextJob.name : 'No active schedule';
+
+  $('#overview-upcoming').innerHTML = activeSchedules.slice(0, 4).map(job => {
+    const storage = state.storage.find(target => target.id === job.storageTargetId);
+    return `<div class="overview-schedule-row"><span class="overview-schedule-dot"></span><div><b>${esc(job.name)}</b><small>${esc(storage?.name || 'Storage target missing')}</small></div><time>${esc(overviewDateLabel(job.nextRunAt))}</time></div>`;
+  }).join('') || `<div class="overview-empty"><b>${totalJobs ? 'No active schedules' : 'No schedules yet'}</b><span>${totalJobs ? 'Enable a schedule to keep the next recovery point moving.' : 'Create a schedule after adding a database and storage target.'}</span><button type="button" class="small-button" onclick="setView('jobs')">Open schedules</button></div>`;
+
+  if (latest) {
+    const latestStatus = overviewStatusLabel(latest.status);
+    const verification = latest.verificationStatus === 'passed' ? 'Archive verified' : latest.verificationStatus || 'Not verified';
+    $('#overview-latest').innerHTML = `<div class="overview-latest-status ${latest.status === 'failed' ? 'is-failed' : latest.status === 'success' ? 'is-success' : 'is-running'}"><span class="status-dot"></span><b>${latestStatus}</b><time>${esc(fmtDate(latest.startedAt))}</time></div><h4>${esc(latest.jobName || 'Backup run')}</h4><p class="overview-artifact">${esc(latest.filename || latest.errorMessage || (latest.status === 'running' ? 'Backup is still running…' : 'No artifact recorded'))}</p><div class="overview-detail-grid"><div><span>Artifact size</span><b>${esc(fmtBytes(latest.sizeBytes))}</b></div><div><span>Verification</span><b>${esc(verification)}</b></div></div>${latest.status === 'failed' ? `<div class="overview-error">${esc(latest.errorMessage || 'The latest backup failed before an artifact was stored.')}</div>` : ''}`;
+  } else {
+    $('#overview-latest').innerHTML = '<div class="overview-empty"><b>No backup has run yet</b><span>Your first successful run becomes the recovery point shown here.</span><button type="button" class="small-button" onclick="setView(\'jobs\')">Review schedules</button></div>';
+  }
+
+  $('#recent-runs').innerHTML = state.runs.slice(0, 5).map(run => `<div class="activity"><span class="activity-mark ${run.status === 'failed' ? 'fail' : run.status === 'running' ? 'running' : ''}"></span><div><b>${esc(run.jobName || 'Backup run')} <span class="activity-status">${esc(overviewStatusLabel(run.status))}</span></b><small>${esc(run.filename || run.errorMessage || 'Backup in progress…')}</small></div><time>${esc(fmtDate(run.startedAt))}</time></div>`).join('') || '<div class="empty">No backup runs yet. Create a schedule to get started.</div>';
+
+  const checks = [
+    { ready: state.connections.length > 0, title: state.connections.length > 0 ? 'Source database configured' : 'Add a source database', detail: state.connections.length > 0 ? `${state.connections.length} connection${state.connections.length === 1 ? '' : 's'} available for schedules.` : 'Add MySQL or MariaDB credentials, then test the connection.', view: 'connections' },
+    { ready: totalStorage > 0, title: totalStorage > 0 ? 'Delivery target configured' : 'Add a delivery target', detail: totalStorage > 0 ? `${totalStorage} destination${totalStorage === 1 ? '' : 's'} available for backup files.` : 'Choose local disk, FTP, WebDAV, Google Drive, or OneDrive.', view: 'storage' },
+    { ready: activeJobs > 0, title: activeJobs > 0 ? 'Automated schedule is active' : totalJobs > 0 ? 'Enable a schedule' : 'Create an automated schedule', detail: activeJobs > 0 ? `${activeJobs} schedule${activeJobs === 1 ? '' : 's'} will create future recovery points.` : 'Run a test backup before relying on the schedule.', view: 'jobs' }
+  ];
+  if (failed > 0) checks.unshift({ ready: false, title: 'Review failed backup runs', detail: `${failed} failed run${failed === 1 ? '' : 's'} may need a retry or destination fix.`, view: 'runs' });
+  if (running > 0) checks.unshift({ ready: true, title: `${running} backup${running === 1 ? '' : 's'} running now`, detail: 'Live progress is available from the process indicator.', view: 'processes' });
+  $('#readiness').innerHTML = checks.slice(0, 4).map(check => `<button type="button" class="check-row ${check.ready ? 'is-ready' : 'is-attention'}" onclick="setView('${check.view}')"><span class="check-icon">${check.ready ? '✓' : '→'}</span><span><h4>${esc(check.title)}</h4><p>${esc(check.detail)}</p></span><span class="check-arrow">→</span></button>`).join('');
+}
 async function runJob(id) { try { await api(`/api/jobs/${encodeURIComponent(id)}/run`, { method: 'POST' }); await loadCollection('runs'); toast('Backup completed; history updated'); } catch (e) { await loadCollection('runs').catch(() => {}); toast(e.message, true); } }
 async function retryRun(id) { try { await api(`/api/runs/${encodeURIComponent(id)}/retry`, { method: 'POST' }); await loadCollection('runs'); toast('Backup retry started'); } catch (e) { toast(e.message, true); } }
 
