@@ -148,16 +148,16 @@ export class BackupService {
 
   async downloadRun(runId: string) {
     this.store.assertEncryptionHealthy();
-    const row = this.store.db.prepare('SELECT r.id,r.status,r.filename,r.storage_location as storageLocation,j.storage_target_id as storageTargetId FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id WHERE r.id=?').get(runId) as any;
+    const row = this.store.db.prepare('SELECT r.id,r.status,r.filename,r.storage_location as storageLocation,r.storage_folder as storageFolder,j.storage_target_id as storageTargetId FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id WHERE r.id=?').get(runId) as any;
     if (!row) throw new BadRequestException('Backup run not found');
     if (row.status !== 'success' || !row.filename) throw new BadRequestException('Only completed backups can be downloaded');
-    const file = await this.storage.download(this.storage.get(String(row.storageTargetId)), String(row.filename), row.storageLocation ? String(row.storageLocation) : undefined);
+    const file = await this.storage.download(this.storage.get(String(row.storageTargetId)), String(row.filename), row.storageLocation ? String(row.storageLocation) : undefined, row.storageFolder ? String(row.storageFolder) : '');
     return { filename: String(row.filename), ...file };
   }
 
   async restoreRun(runId: string, input: any = {}) {
     this.store.assertEncryptionHealthy();
-    const row = this.store.db.prepare('SELECT r.id,r.status,r.filename,r.storage_location as storageLocation,j.name as jobName,j.database_connection_id as sourceConnectionId,j.database_scope as databaseScope,j.database_names as databaseNames,j.backup_layout as backupLayout,j.storage_target_id as storageTargetId,j.compression,j.backup_encryption as backupEncryption FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id WHERE r.id=?').get(runId) as any;
+    const row = this.store.db.prepare('SELECT r.id,r.status,r.filename,r.storage_location as storageLocation,r.storage_folder as storageFolder,j.name as jobName,j.database_connection_id as sourceConnectionId,j.database_scope as databaseScope,j.database_names as databaseNames,j.backup_layout as backupLayout,j.storage_target_id as storageTargetId,j.compression,j.backup_encryption as backupEncryption FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id WHERE r.id=?').get(runId) as any;
     if (!row) throw new BadRequestException('Backup run not found');
     if (row.status !== 'success' || !row.filename) throw new BadRequestException('Only completed backups can be restored');
     const mode = input.mode === 'new' ? 'new' : 'overwrite';
@@ -174,7 +174,7 @@ export class BackupService {
     }
     const tempDir = fs.mkdtempSync(path.join(this.store.dataDir, 'tmp', 'restore-')); let downloaded: { path: string; cleanup: boolean } | undefined;
     try {
-      const target = this.storage.get(String(row.storageTargetId)); downloaded = await this.storage.download(target, String(row.filename), row.storageLocation ? String(row.storageLocation) : undefined); let sqlFile = downloaded.path; const backupLayout = ['database', 'table'].includes(row.backupLayout) ? row.backupLayout : 'single'; const compression: 'none' | 'gzip' | 'zip' = ['none', 'gzip', 'zip'].includes(row.compression) ? row.compression : String(row.filename).includes('.sql.gz') ? 'gzip' : String(row.filename).endsWith('.zip') || String(row.filename).endsWith('.zip.enc') ? 'zip' : 'none';
+      const target = this.storage.get(String(row.storageTargetId)); downloaded = await this.storage.download(target, String(row.filename), row.storageLocation ? String(row.storageLocation) : undefined, row.storageFolder ? String(row.storageFolder) : ''); let sqlFile = downloaded.path; const backupLayout = ['database', 'table'].includes(row.backupLayout) ? row.backupLayout : 'single'; const compression: 'none' | 'gzip' | 'zip' = ['none', 'gzip', 'zip'].includes(row.compression) ? row.compression : String(row.filename).includes('.sql.gz') ? 'gzip' : String(row.filename).endsWith('.zip') || String(row.filename).endsWith('.zip.enc') ? 'zip' : 'none';
       const encrypted = row.backupEncryption === 'aes-256-gcm' || String(row.filename).endsWith('.enc');
       if (encrypted) { const decrypted = path.join(tempDir, compression === 'zip' ? 'restore.zip' : compression === 'gzip' ? 'restore.sql.gz' : 'restore.sql'); await this.decryptFile(sqlFile, decrypted); sqlFile = decrypted; }
       if (compression === 'gzip') { const expanded = path.join(tempDir, 'restore.sql'); await pipeline(fs.createReadStream(sqlFile), createGunzip(), fs.createWriteStream(expanded, { mode: 0o600 })); sqlFile = expanded; }
@@ -197,13 +197,14 @@ export class BackupService {
       if (job.backup_encryption === 'aes-256-gcm') { this.setProcessStage(runId, 'encrypting'); this.addProcessLog(runId, 'Encrypting backup archive'); const encrypted = `${artifact}.enc`; await this.encryptFile(artifact, encrypted); fs.rmSync(artifact); artifact = encrypted; }
       this.setProcessStage(runId, 'verifying'); this.addProcessLog(runId, 'Verifying archive contents');
       const filename = `${safeFilePart(job.filename_prefix)}-${new Date().toISOString().replace(/[:.]/g, '-')}.${compression === 'gzip' ? 'sql.gz' : compression === 'zip' ? 'zip' : 'sql'}${job.backup_encryption === 'aes-256-gcm' ? '.enc' : ''}`;
+      const storageFolder = `schedule-${safeFilePart(jobId)}`;
       const verification = await this.verifyArtifact(artifact, compression, job.backup_encryption === 'aes-256-gcm', tempDir);
       const stats = fs.statSync(artifact); const hash = await this.sha256(artifact);
       this.setProcessStage(runId, 'uploading'); this.addProcessLog(runId, `Uploading ${filename}`);
-      const uploaded = await this.storage.upload(target, artifact, filename);
+      const uploaded = await this.storage.upload(target, artifact, filename, storageFolder);
       this.setProcessStage(runId, 'rotating'); this.addProcessLog(runId, 'Applying retention rotation');
-      await this.storage.rotate(target, safeFilePart(job.filename_prefix), Number(job.retention_count));
-      const finished = this.store.now(); this.store.db.prepare('UPDATE backup_runs SET status=?,finished_at=?,filename=?,storage_location=?,size_bytes=?,sha256=?,verification_status=?,verification_message=? WHERE id=?').run('success', finished, filename, uploaded.location, stats.size, hash, verification.status, verification.message, runId); this.store.db.prepare('UPDATE backup_jobs SET last_run_at=? WHERE id=?').run(finished, jobId); void this.system.notify('backup_success', `VaultBack backup succeeded: ${job.name || jobId} -> ${filename}`); return { ok: true, filename, sizeBytes: stats.size, sha256: hash, verification };
+      await this.storage.rotate(target, safeFilePart(job.filename_prefix), Number(job.retention_count), storageFolder);
+      const finished = this.store.now(); this.store.db.prepare('UPDATE backup_runs SET status=?,finished_at=?,filename=?,storage_location=?,storage_folder=?,size_bytes=?,sha256=?,verification_status=?,verification_message=? WHERE id=?').run('success', finished, filename, uploaded.location, storageFolder, stats.size, hash, verification.status, verification.message, runId); this.store.db.prepare('UPDATE backup_jobs SET last_run_at=? WHERE id=?').run(finished, jobId); void this.system.notify('backup_success', `VaultBack backup succeeded: ${job.name || jobId} -> ${filename}`); return { ok: true, filename, sizeBytes: stats.size, sha256: hash, verification };
     } catch (error: any) { const message = String(error.message || error).slice(0, 1000); this.logger.error(`Backup ${jobId} failed: ${message}`); this.setProcessStage(runId, 'failed', 'failed', message); this.store.db.prepare('UPDATE backup_runs SET status=?,finished_at=?,error_message=?,verification_status=? WHERE id=?').run('failed', this.store.now(), message, 'failed', runId); void this.system.notify('backup_failed', `VaultBack backup failed: ${jobId}\n${message}`); throw error; } finally { const process = this.liveProcessState.get(runId); if (process?.status === 'running') this.setProcessStage(runId, 'completed', 'success', 'Backup process finished'); this.running.delete(jobId); if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true }); }
   }
   private crc32Update(crc: number, data: Buffer) { let value = crc; for (const byte of data) value = ZIP_CRC_TABLE[(value ^ byte) & 0xff] ^ (value >>> 8); return value >>> 0; }

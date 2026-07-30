@@ -2,7 +2,9 @@
 
 VaultBack is a self-hosted database backup control plane for MySQL and MariaDB. It provides a browser GUI and a NestJS/Fastify backend in one process. It stores its own configuration in SQLite, encrypts database and storage credentials, schedules backups, compresses artifacts, uploads them to multiple destinations, rotates old files, and records backup history and checksums.
 
-For a visual aaPanel Node.js/PM2 deployment walkthrough, see [AA_PANEL.md](AA_PANEL.md).
+For a visual aaPanel Node.js/PM2 deployment walkthrough, see [docs/AA_PANEL.md](docs/AA_PANEL.md).
+
+VaultBack is source-available for personal and educational use. Commercial use requires written permission from the copyright holder. See [docs/TERMS_OF_USE.md](docs/TERMS_OF_USE.md) for the full terms, warranty disclaimer, liability limitation, and third-party component notice.
 
 ## What is deployed
 
@@ -48,7 +50,7 @@ The command prompts for a new username and password, then asks you to type `RESE
 
 - Scheduled MySQL/MariaDB backups with all-database or live database checklist selection.
 - GZIP or ZIP compression, per-database and per-table ZIP layouts, optional AES-256-GCM backup-file encryption, retention rotation, checksums, and archive/content verification.
-- Local, FTP/FTPS, WebDAV/Synology, Google Drive, and OneDrive destinations.
+- Local, FTP/FTPS, WebDAV/Synology, Google Drive, and OneDrive destinations. Each new schedule stores its backups in a dedicated `schedule-<schedule-id>` folder within the selected target, so separate schedules never mix their files. Existing backups created before this behavior remain supported from the target root.
 - Google and Microsoft OAuth refresh-token support for unattended cloud schedules.
 - Backup success/failure/capacity notifications through Discord, Telegram, or HTTPS webhooks.
 - Storage capacity monitoring, server-side search and pagination for databases, storage targets, schedules, backup history, and users, plus per-schedule stored-backup lists, retry actions, and safe configuration export. List queries return only the requested page, with a 25-item default and 50/100-item choices, so large installations remain responsive.
@@ -92,7 +94,7 @@ tools/
 
 Use the matching `<platform>-<arch>` directory for other systems, such as `linux-x64`.
 
-The repository does not include third-party binaries. Obtain and redistribute MySQL or MariaDB clients only under their applicable license terms. The repository includes the folder layout and placeholders; copy the matching standalone binaries into the folders before deployment. See [tools/README.md](tools/README.md).
+The repository does not include third-party binaries. Obtain and redistribute MySQL or MariaDB clients only under their applicable license terms. The repository includes the folder layout and placeholders; copy the matching standalone binaries into the folders before deployment. See [tools/README.md](tools/README.md) and [docs/TERMS_OF_USE.md](docs/TERMS_OF_USE.md).
 
 ### Option C: Docker deployment
 
@@ -188,6 +190,16 @@ Schedules support three layouts:
 - **One SQL file per table** creates a ZIP containing `DatabaseName/TableName.sql` for every base table in every selected or visible database. Views are skipped in this layout because MariaDB/MySQL clients do not reliably dump a view through the table-specific command; single-file and per-database layouts continue to include views.
 
 The split layouts always use ZIP compression. ZIP backups can be downloaded, verified, and restored through the normal Backup history workflow. Existing single-file schedules remain unchanged.
+
+### Backup folder layout
+
+Every newly completed backup is placed below a schedule-specific folder on every storage type:
+
+```text
+<configured target>/<schedule-id folder>/<backup filename>
+```
+
+For local storage this is a real subdirectory. FTP/FTPS and WebDAV/Synology receive the same remote subdirectory, while Google Drive and OneDrive receive a schedule folder below the configured parent folder. The folder uses the immutable schedule ID rather than the editable display name, preventing collisions when names are duplicated or changed. Rotation is scoped to that folder. Older run records without a folder marker continue to use their original target-root location.
 
 ## Windows deployment with Laragon
 

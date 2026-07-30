@@ -50,7 +50,7 @@ The frontend is a classic browser script, not a framework component tree. Preser
 
 ## Database Client and Deployment Rules
 
-VaultBack does not require a second database server. It uses only matching portable tools under `tools/<engine>/<platform>-<arch>/bin/` inside the application directory. The guided installer downloads and verifies the MariaDB client pack into `tools/mariadb/<platform>-<arch>/`; its compatible tools serve both MySQL and MariaDB connections. System installations, `PATH`, and `DB_CLIENT_BINARY`/`DB_DUMP_BINARY` overrides are intentionally ignored. Deployment-specific instructions belong in `README.md`, `AA_PANEL.md`, or `tools/README.md`.
+VaultBack does not require a second database server. It uses only matching portable tools under `tools/<engine>/<platform>-<arch>/bin/` inside the application directory. The guided installer downloads and verifies the MariaDB client pack into `tools/mariadb/<platform>-<arch>/`; its compatible tools serve both MySQL and MariaDB connections. System installations, `PATH`, and `DB_CLIENT_BINARY`/`DB_DUMP_BINARY` overrides are intentionally ignored. Deployment-specific instructions belong in `README.md`, `docs/AA_PANEL.md`, or `tools/README.md`.
 
 ## Verification Checklist
 

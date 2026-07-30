@@ -50,22 +50,23 @@ export class StorageService {
 
   delete(id: string) { this.store.db.prepare('DELETE FROM storage_targets WHERE id = ?').run(id); return { ok: true }; }
 
-  async upload(target: StorageTarget, localFile: string, filename: string) {
+  async upload(target: StorageTarget, localFile: string, filename: string, folder = '') {
+    this.validateFilename(filename); this.validateFolder(folder);
     switch (target.type) {
-      case 'local': return this.uploadLocal(target, localFile, filename);
-      case 'ftp': return this.uploadFtp(target, localFile, filename);
-      case 'webdav': return this.uploadWebdav(target, localFile, filename);
-      case 'google-drive': return this.uploadGoogleDrive(target, localFile, filename);
-      case 'onedrive': return this.uploadOneDrive(target, localFile, filename);
+      case 'local': return this.uploadLocal(target, localFile, filename, folder);
+      case 'ftp': return this.uploadFtp(target, localFile, filename, folder);
+      case 'webdav': return this.uploadWebdav(target, localFile, filename, folder);
+      case 'google-drive': return this.uploadGoogleDrive(target, localFile, filename, folder);
+      case 'onedrive': return this.uploadOneDrive(target, localFile, filename, folder);
       default: throw new Error(`Storage adapter not implemented: ${target.type}`);
     }
   }
 
-  async download(target: StorageTarget, filename: string, location?: string) {
-    this.validateFilename(filename);
+  async download(target: StorageTarget, filename: string, location?: string, folder = '') {
+    this.validateFilename(filename); this.validateFolder(folder);
     if (target.type === 'local') {
       const directory = this.localDir(target);
-      const file = path.resolve(directory, filename);
+      const file = path.resolve(directory, folder, filename);
       if (!isWithin(directory, file) || !fs.existsSync(file)) throw new BadRequestException('Backup file is no longer available in local storage');
       return { path: file, cleanup: false };
     }
@@ -73,10 +74,10 @@ export class StorageService {
     const tempDir = fs.mkdtempSync(path.join(this.store.dataDir, 'tmp', 'download-'));
     const output = path.join(tempDir, filename);
     try {
-      if (target.type === 'ftp') await this.downloadFtp(target, filename, output);
-      else if (target.type === 'webdav') await this.downloadWebdav(target, filename, output);
+      if (target.type === 'ftp') await this.downloadFtp(target, filename, output, folder);
+      else if (target.type === 'webdav') await this.downloadWebdav(target, filename, output, folder);
       else if (target.type === 'google-drive') await this.downloadGoogleDrive(target, filename, location, output);
-      else if (target.type === 'onedrive') await this.downloadOneDrive(target, filename, location, output);
+      else if (target.type === 'onedrive') await this.downloadOneDrive(target, filename, location, output, folder);
       else throw new BadRequestException(`Download is not supported for ${target.type}`);
       return { path: output, cleanup: true };
     } catch (error) {
@@ -85,10 +86,11 @@ export class StorageService {
     }
   }
 
-  async rotate(target: StorageTarget, prefix: string, retentionCount: number) {
+  async rotate(target: StorageTarget, prefix: string, retentionCount: number, folder = '') {
     if (retentionCount < 1) return;
+    this.validateFolder(folder);
     if (target.type === 'local') {
-      const dir = this.localDir(target);
+      const dir = path.resolve(this.localDir(target), folder);
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -126,12 +128,14 @@ export class StorageService {
   }
 
   private validateFilename(filename: string) { if (!filename || path.basename(filename) !== filename || /[\\/\0]/.test(filename)) throw new BadRequestException('Invalid backup filename'); }
-  private uploadLocal(target: StorageTarget, localFile: string, filename: string) { const dir = this.localDir(target); ensureDirectory(dir); const destination = path.join(dir, filename); try { fs.copyFileSync(localFile, destination); } catch (error: any) { if (error?.code === 'ENOENT') throw new BadRequestException('The temporary backup file is no longer available to upload'); throw error; } return { location: destination }; }
+  private validateFolder(folder: string) { if (folder && (folder === '.' || folder === '..' || path.basename(folder) !== folder || /[\\/\0]/.test(folder))) throw new BadRequestException('Invalid schedule backup folder'); }
+  private uploadLocal(target: StorageTarget, localFile: string, filename: string, folder: string) { const dir = path.resolve(this.localDir(target), folder); if (!isWithin(this.localDir(target), dir)) throw new BadRequestException('Invalid local schedule backup folder'); ensureDirectory(dir); const destination = path.join(dir, filename); try { fs.copyFileSync(localFile, destination); } catch (error: any) { if (error?.code === 'ENOENT') throw new BadRequestException('The temporary backup file is no longer available to upload'); throw error; } return { location: destination }; }
   private localDir(target: StorageTarget) { const requested = String(target.config.path || ''); if (!requested) throw new Error('Local storage path is required'); const root = path.resolve(this.store.dataDir, 'backups'); const dir = path.resolve(requested); if (process.env.ALLOW_ANY_LOCAL_PATH !== 'true' && !isWithin(root, dir)) throw new Error(`Local paths must be inside ${root}`); return dir; }
   private ftpConfig(target: StorageTarget) { const c = target.config as any; return { host: String(c.host), port: Number(c.port || 21), user: String(c.username), password: String(c.password), secure: Boolean(c.secure) }; }
-  private ftpRemotePath(target: StorageTarget, filename: string) { return `${String((target.config as any).remotePath || '').replace(/\\/g, '/').replace(/\/$/, '')}/${filename}`.replace(/^\//, '/'); }
-  private async uploadFtp(target: StorageTarget, localFile: string, filename: string) { const c = new Client(30000); try { await c.access(this.ftpConfig(target)); const remote = `${String((target.config as any).remotePath || '').replace(/\\/g, '/').replace(/\/$/, '')}/${filename}`.replace(/^\//, '/'); await c.uploadFrom(localFile, remote); return { location: `ftp://${(target.config as any).host}${remote}` }; } finally { c.close(); } }
-  private async downloadFtp(target: StorageTarget, filename: string, output: string) { const c = new Client(30000); try { await c.access(this.ftpConfig(target)); await c.downloadTo(output, this.ftpRemotePath(target, filename)); } finally { c.close(); } }
+  private ftpRemoteDirectory(target: StorageTarget, folder = '') { const base = String((target.config as any).remotePath || '').replace(/\\/g, '/').replace(/\/$/, ''); return `${base}/${folder}`.replace(/\/+/g, '/') || '/'; }
+  private ftpRemotePath(target: StorageTarget, filename: string, folder = '') { return `${this.ftpRemoteDirectory(target, folder).replace(/\/$/, '')}/${filename}`.replace(/^\//, '/'); }
+  private async uploadFtp(target: StorageTarget, localFile: string, filename: string, folder: string) { const c = new Client(30000); try { await c.access(this.ftpConfig(target)); const remote = this.ftpRemotePath(target, filename, folder); if (folder) { await c.ensureDir(this.ftpRemoteDirectory(target, folder)); await c.uploadFrom(localFile, filename); } else await c.uploadFrom(localFile, remote); return { location: `ftp://${(target.config as any).host}${remote}` }; } finally { c.close(); } }
+  private async downloadFtp(target: StorageTarget, filename: string, output: string, folder: string) { const c = new Client(30000); try { await c.access(this.ftpConfig(target)); await c.downloadTo(output, this.ftpRemotePath(target, filename, folder)); } finally { c.close(); } }
   private webdavHeaders(target: StorageTarget) { const c = target.config as any; const token = c.token ? `Bearer ${c.token}` : `Basic ${Buffer.from(`${c.username || ''}:${c.password || ''}`).toString('base64')}`; return { Authorization: token }; }
   private webdavUrl(target: StorageTarget, rawUrl: string) {
     let parsed: URL;
@@ -196,11 +200,16 @@ export class StorageService {
     const detail = String(source?.message || (error as any)?.message || 'Unknown network error').replace(/\s+/g, ' ').slice(0, 240);
     return new BadRequestException(`Could not reach WebDAV at ${host}. Check the URL, port, Synology WebDAV service, firewall, and HTTPS certificate${detail ? `: ${detail}` : '.'}`);
   }
-  private async uploadWebdav(target: StorageTarget, localFile: string, filename: string) { const c = target.config as any; const base = String(c.url).replace(/\/$/, ''); const response = await this.webdavRequest(target, `${base}/${encodeURIComponent(filename)}`, { method: 'PUT', headers: { ...this.webdavHeaders(target), 'Content-Type': 'application/octet-stream' }, body: fs.createReadStream(localFile) }); if (response.status < 200 || response.status >= 300) throw new BadRequestException(`WebDAV upload returned ${response.status}`); return { location: `${base}/${filename}` }; }
-  private async downloadWebdav(target: StorageTarget, filename: string, output: string) { const c = target.config as any; const base = String(c.url).replace(/\/$/, ''); const response = await this.webdavRequest(target, `${base}/${encodeURIComponent(filename)}`, { method: 'GET', headers: this.webdavHeaders(target), output }); if (response.status < 200 || response.status >= 300) { fs.rmSync(output, { force: true }); throw new BadRequestException(`WebDAV download returned ${response.status}`); } }
-  private async uploadGoogleDrive(target: StorageTarget, localFile: string, filename: string) {
+  private webdavPath(base: string, ...segments: string[]) { return [base.replace(/\/$/, ''), ...segments.filter(Boolean).map(segment => encodeURIComponent(segment))].join('/'); }
+  private async ensureWebdavFolder(target: StorageTarget, base: string, folder: string) { if (!folder) return; const response = await this.webdavRequest(target, this.webdavPath(base, folder), { method: 'MKCOL', headers: this.webdavHeaders(target) }); if ((response.status < 200 || response.status >= 300) && response.status !== 405) throw new BadRequestException(`WebDAV could not create the schedule folder (${response.status})`); }
+  private async uploadWebdav(target: StorageTarget, localFile: string, filename: string, folder: string) { const c = target.config as any; const base = String(c.url).replace(/\/$/, ''); await this.ensureWebdavFolder(target, base, folder); const response = await this.webdavRequest(target, this.webdavPath(base, folder, filename), { method: 'PUT', headers: { ...this.webdavHeaders(target), 'Content-Type': 'application/octet-stream' }, body: fs.createReadStream(localFile) }); if (response.status < 200 || response.status >= 300) throw new BadRequestException(`WebDAV upload returned ${response.status}`); return { location: this.webdavPath(base, folder, filename) }; }
+  private async downloadWebdav(target: StorageTarget, filename: string, output: string, folder: string) { const c = target.config as any; const base = String(c.url).replace(/\/$/, ''); const response = await this.webdavRequest(target, this.webdavPath(base, folder, filename), { method: 'GET', headers: this.webdavHeaders(target), output }); if (response.status < 200 || response.status >= 300) { fs.rmSync(output, { force: true }); throw new BadRequestException(`WebDAV download returned ${response.status}`); } }
+  private async googleDriveFetch(target: StorageTarget, url: string, init: RequestInit = {}, retry = true) { const c = target.config as any; const headers = { ...(init.headers || {}), Authorization: `Bearer ${await this.accessToken(target, 'google-drive', false)}` }; let response = await fetch(url, { ...init, headers }); if (response.status === 401 && retry && c.refreshToken) { headers.Authorization = `Bearer ${await this.accessToken(target, 'google-drive', true)}`; response = await fetch(url, { ...init, headers }); } return response; }
+  private driveQueryValue(value: string) { return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
+  private async ensureGoogleDriveFolder(target: StorageTarget, folder: string) { const c = target.config as any; const parent = String(c.folderId || ''); const query = [`name='${this.driveQueryValue(folder)}'`, "mimeType='application/vnd.google-apps.folder'", 'trashed=false', ...(parent ? [`'${this.driveQueryValue(parent)}' in parents`] : [])].join(' and '); const list = await this.googleDriveFetch(target, `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&pageSize=1&fields=files(id)`); if (!list.ok) throw new Error(`Google Drive folder lookup returned ${list.status}`); const files = await list.json() as any; if (files.files?.[0]?.id) return String(files.files[0].id); const response = await this.googleDriveFetch(target, 'https://www.googleapis.com/drive/v3/files', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: folder, mimeType: 'application/vnd.google-apps.folder', ...(parent ? { parents: [parent] } : {}) }) }); if (!response.ok) throw new Error(`Google Drive folder creation returned ${response.status}`); const created = await response.json() as any; return String(created.id); }
+  private async uploadGoogleDrive(target: StorageTarget, localFile: string, filename: string, folder: string) {
     const c = target.config as any; const content = fs.readFileSync(localFile); const send = async (token: string) => {
-      const boundary = `vaultback-${crypto.randomUUID()}`; const metadata = JSON.stringify({ name: filename, parents: c.folderId ? [c.folderId] : undefined });
+      const boundary = `vaultback-${crypto.randomUUID()}`; const parent = folder ? await this.ensureGoogleDriveFolder(target, folder) : String(c.folderId || ''); const metadata = JSON.stringify({ name: filename, parents: parent ? [parent] : undefined });
       const body = Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n--${boundary}\r\nContent-Type: application/octet-stream\r\n\r\n`), content, Buffer.from(`\r\n--${boundary}--`) ]);
       return fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` }, body });
     };
@@ -209,16 +218,17 @@ export class StorageService {
     if (!response.ok) throw new Error(`Google Drive upload returned ${response.status}`);
     const result = await response.json() as any; return { location: `gdrive://${result.id}` };
   }
-  private async uploadOneDrive(target: StorageTarget, localFile: string, filename: string) {
-    const c = target.config as any; const content = fs.readFileSync(localFile); const remotePath = String(c.remotePath || filename).replace(/^\/+/, '');
-    const send = (token: string) => fetch(`https://graph.microsoft.com/v1.0/me/drive/root:/${remotePath}:/content`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' }, body: content });
-    let response = await send(await this.accessToken(target, 'onedrive'));
-    if (response.status === 401 && c.refreshToken) response = await send(await this.accessToken(target, 'onedrive', true));
+  private graphPath(value: string) { const parts = String(value || '').split(/[\\/]+/).filter(Boolean).map(part => encodeURIComponent(part)); return parts.length ? `root:/${parts.join('/')}:` : 'root'; }
+  private async oneDriveFetch(target: StorageTarget, url: string, init: RequestInit = {}, retry = true) { const c = target.config as any; const headers = { ...(init.headers || {}), Authorization: `Bearer ${await this.accessToken(target, 'onedrive', false)}` }; let response = await fetch(url, { ...init, headers }); if (response.status === 401 && retry && c.refreshToken) { headers.Authorization = `Bearer ${await this.accessToken(target, 'onedrive', true)}`; response = await fetch(url, { ...init, headers }); } return response; }
+  private async ensureOneDriveFolder(target: StorageTarget, folder: string) { const base = String((target.config as any).remotePath || '').replace(/^\/+|\/+$/g, ''); const endpoint = `https://graph.microsoft.com/v1.0/me/drive/${this.graphPath(base)}/children`; const response = await this.oneDriveFetch(target, endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: folder, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }) }); if (!response.ok && response.status !== 409) throw new Error(`OneDrive schedule folder creation returned ${response.status}`); }
+  private async uploadOneDrive(target: StorageTarget, localFile: string, filename: string, folder: string) {
+    const c = target.config as any; const content = fs.readFileSync(localFile); if (folder) await this.ensureOneDriveFolder(target, folder); const remotePath = [String(c.remotePath || '').replace(/^\/+|\/+$/g, ''), folder, filename].filter(Boolean).join('/');
+    const response = await this.oneDriveFetch(target, `https://graph.microsoft.com/v1.0/me/drive/${this.graphPath(remotePath)}/content`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: content });
     if (!response.ok) throw new Error(`OneDrive upload returned ${response.status}`);
     const result = await response.json() as any; return { location: `onedrive://${result.id}` };
   }
   private async downloadGoogleDrive(target: StorageTarget, filename: string, location: string | undefined, output: string) { const id = String(location || '').replace(/^gdrive:\/\//, ''); if (!id || id === String(location)) throw new BadRequestException(`Google Drive file ID is unavailable for ${filename}`); let response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, { headers: { Authorization: `Bearer ${await this.accessToken(target, 'google-drive')}` } }); if (response.status === 401 && (target.config as any).refreshToken) response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, { headers: { Authorization: `Bearer ${await this.accessToken(target, 'google-drive', true)}` } }); if (!response.ok) throw new BadRequestException(`Google Drive download returned ${response.status}`); await this.writeResponse(response, output); }
-  private async downloadOneDrive(target: StorageTarget, filename: string, location: string | undefined, output: string) { const c = target.config as any; const id = String(location || '').replace(/^onedrive:\/\//, ''); const url = id && id !== String(location) ? `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(id)}/content` : `https://graph.microsoft.com/v1.0/me/drive/root:/${String(c.remotePath || filename).replace(/^\/+/, '')}:/content`; let response = await fetch(url, { headers: { Authorization: `Bearer ${await this.accessToken(target, 'onedrive')}` } }); if (response.status === 401 && c.refreshToken) response = await fetch(url, { headers: { Authorization: `Bearer ${await this.accessToken(target, 'onedrive', true)}` } }); if (!response.ok) throw new BadRequestException(`OneDrive download returned ${response.status}`); await this.writeResponse(response, output); }
+  private async downloadOneDrive(target: StorageTarget, filename: string, location: string | undefined, output: string, folder = '') { const c = target.config as any; const id = String(location || '').replace(/^onedrive:\/\//, ''); const remotePath = [String(c.remotePath || '').replace(/^\/+|\/+$/g, ''), folder, filename].filter(Boolean).join('/'); const url = id && id !== String(location) ? `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(id)}/content` : `https://graph.microsoft.com/v1.0/me/drive/${this.graphPath(remotePath)}/content`; const response = await this.oneDriveFetch(target, url); if (!response.ok) throw new BadRequestException(`OneDrive download returned ${response.status}`); await this.writeResponse(response, output); }
   private async writeResponse(response: Response, output: string) { const data = Buffer.from(await response.arrayBuffer()); fs.writeFileSync(output, data, { mode: 0o600 }); }
   private async accessToken(target: StorageTarget, provider: 'google-drive' | 'onedrive', forceRefresh = false) {
     const c = target.config as any;
