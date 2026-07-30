@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import http from 'node:http';
+import https from 'node:https';
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -81,10 +83,29 @@ function copyManaged(fromRoot, toRoot, replace = false) {
   }
 }
 
-async function waitForHealth(url, expectedUp) {
+function probeHealth(url, hostHeader) {
+  return new Promise(resolve => {
+    const target = new URL(url);
+    const client = target.protocol === 'https:' ? https : http;
+    const request = client.request(target, {
+      method: 'GET',
+      headers: { host: hostHeader },
+      rejectUnauthorized: false,
+      timeout: 1500
+    }, response => {
+      response.resume();
+      resolve(response.statusCode >= 200 && response.statusCode < 300);
+    });
+    request.on('timeout', () => request.destroy());
+    request.on('error', () => resolve(false));
+    request.end();
+  });
+}
+
+async function waitForHealth(url, expectedUp, hostHeader) {
   const deadline = Date.now() + (expectedUp ? 45000 : 30000);
   while (Date.now() < deadline) {
-    try { const response = await fetch(url, { signal: AbortSignal.timeout(1500) }); if (response.ok === expectedUp) return true; } catch { if (!expectedUp) return true; }
+    try { if (await probeHealth(url, hostHeader) === expectedUp) return true; } catch { if (!expectedUp) return true; }
     await new Promise(resolve => setTimeout(resolve, expectedUp ? 1000 : 400));
   }
   return !expectedUp;
@@ -118,16 +139,16 @@ async function main() {
     safeEntries(archive); fs.mkdirSync(stage, { recursive: true }); run('tar', ['-xzf', archive, '-C', stage], { stdio: 'ignore' });
     const releaseRoot = locateRelease(stage); if (!releaseRoot || !fs.existsSync(path.join(releaseRoot, 'dist', 'main.js'))) throw new Error('Release package is missing dist/main.js.');
     const packageVersion = String(JSON.parse(fs.readFileSync(path.join(releaseRoot, 'package.json'), 'utf8')).version || ''); if (packageVersion !== targetVersion) throw new Error('Release package version does not match its manifest.');
-    const protocol = String(envFile.APP_PROTOCOL || 'http').toLowerCase(); const secure = protocol === 'https' || protocol === 'both'; const port = protocol === 'both' ? Number(envFile.HTTPS_PORT || 3443) : Number(envFile.PORT || 3010); const healthUrl = `${secure ? 'https' : 'http'}://127.0.0.1:${port}/api/health`;
+    const protocol = String(envFile.APP_PROTOCOL || 'http').toLowerCase(); const secure = protocol === 'https' || protocol === 'both'; const port = protocol === 'both' ? Number(envFile.HTTPS_PORT || 3443) : Number(envFile.PORT || 3010); const healthUrl = `${secure ? 'https' : 'http'}://127.0.0.1:${port}/api/health`; const healthHost = argument('health-host', String(envFile.APP_DOMAIN || '127.0.0.1').split(',')[0].trim() || '127.0.0.1');
     const rollback = path.join(appRoot, 'data', 'tmp', 'release-install', `${targetVersion}-${Date.now()}`, 'rollback'); fs.mkdirSync(rollback, { recursive: true }); copyManaged(appRoot, rollback);
     const existingPm2Process = hasPm2Process(pm2App);
-    if (existingPm2Process) { console.log(`Stopping PM2 process ${pm2App}...`); run('pm2', ['stop', pm2App]); await waitForHealth(healthUrl, false); }
+    if (existingPm2Process) { console.log(`Stopping PM2 process ${pm2App}...`); run('pm2', ['stop', pm2App]); await waitForHealth(healthUrl, false, healthHost); }
     try {
       copyManaged(releaseRoot, appRoot, true); run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: appRoot, stdio: 'inherit' });
       if (pm2App) {
         if (existingPm2Process) run('pm2', ['restart', pm2App, '--update-env']);
         else { run('pm2', ['start', path.join(appRoot, 'ecosystem.config.cjs'), '--only', pm2App]); run('pm2', ['save']); }
-        if (!await waitForHealth(healthUrl, true)) throw new Error('The updated application did not pass its health check.');
+        if (!await waitForHealth(healthUrl, true, healthHost)) throw new Error(`The updated application did not pass its health check at ${healthUrl} with Host ${healthHost}. Check PM2 logs.`);
       }
       console.log(`VaultBack ${targetVersion} installed successfully.`);
     } catch (error) {

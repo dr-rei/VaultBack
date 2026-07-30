@@ -51,7 +51,7 @@ curl --fail --location --proto '=https' --tlsv1.2 \
   | bash -s -- /www/wwwroot/vaultback --pm2-app my-vaultback
 ~~~
 
-The installer supports both an empty directory and an existing VaultBack deployment. It never replaces `data/`, `.env`, or `tools/`. Existing deployments are rolled back if dependency installation or the post-restart health check fails. Node.js 22+, `curl`, `tar`, and PM2 are required. If you prefer to inspect the script before running it, download it to `/tmp`, review it, and execute it with `bash` instead of piping it directly to the shell.
+The installer supports both an empty directory and an existing VaultBack deployment. It never replaces `data/`, `.env`, or `tools/`. Its health check uses loopback with the configured `APP_DOMAIN` as the `Host` header, so production host validation and reverse-proxy DNS do not prevent the local check. Existing deployments are rolled back if dependency installation or the post-restart health check fails. Node.js 22+, `curl`, `tar`, and PM2 are required. If you prefer to inspect the script before running it, download it to `/tmp`, review it, and execute it with `bash` instead of piping it directly to the shell.
 
 For Windows, open PowerShell as the account that owns the PM2 process and run:
 

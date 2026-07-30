@@ -1,6 +1,6 @@
 {
   "name": "vaultback-db-backup",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Secure, self-hosted database backup manager with a GUI",
   "license": "UNLICENSED",
