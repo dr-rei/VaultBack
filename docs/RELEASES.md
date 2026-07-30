@@ -24,6 +24,31 @@ VaultBack administrator → Settings → Software updates
 
 The included workflow publishes Linux x64 for aaPanel and Windows x64 packages from the same application source. Add another artifact to the manifest when publishing an ARM build; the artifact key must match `${process.platform}-${process.arch}`, for example `linux-arm64`.
 
+## One-command bootstrap installers
+
+The repository hosts small Linux and Windows bootstrap scripts so an administrator does not need to upload an archive, extract it, run `npm ci`, and restart PM2 as separate steps. Both launchers download the latest HTTPS manifest and pass control to the Node installer included in the release process:
+
+Linux/aaPanel:
+
+```bash
+curl --fail --location --proto '=https' --tlsv1.2 \
+  https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-release.sh \
+  | bash -s -- /www/wwwroot/vaultback
+```
+
+Windows PowerShell:
+
+```powershell
+$installer = Join-Path $env:TEMP 'vaultback-install.ps1'
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-release.ps1 -OutFile $installer
+powershell -ExecutionPolicy Bypass -File $installer -AppRoot 'C:\VaultBack' -Pm2App vaultback
+Remove-Item -LiteralPath $installer -Force
+```
+
+The default PM2 process name is `vaultback`; use `--pm2-app` on Linux or `-Pm2App` on Windows when it differs. The installer supports an empty application directory for first installation and an existing deployment for upgrades. It downloads the platform artifact, verifies its SHA-256 value from `latest.json`, preserves `data/`, `.env`, and `tools/`, installs production dependencies, starts or restarts PM2, and checks `/api/health`. Existing application files are restored automatically if the deployment fails.
+
+Required host tools are Node.js 22 or newer, PM2, and the platform's normal `curl`/PowerShell and `tar` utilities. The command still requires first-time configuration of `.env`, the stable encryption key, and database client tools. Review the launcher before piping it into a shell; environments that require pinned inputs can replace the `main` URL with a reviewed Git tag.
+
 ## Publish a release
 
 1. Update `version` in `package.json` and commit the change.

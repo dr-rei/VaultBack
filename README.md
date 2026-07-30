@@ -198,6 +198,16 @@ Rate limiting is disabled when `NODE_ENV` is anything other than `production`. I
 
 Release builds are published as versioned archives rather than Git working trees. The administrator can open **Settings → Software updates** to check the HTTPS release manifest and install a newer package. The updater verifies the manifest artifact URL and SHA-256 checksum, preserves `data/`, `.env`, and `tools/`, runs `npm ci --omit=dev`, restarts the configured PM2 process, and checks the health endpoint. A failed install is rolled back to the previous application files. Configure `UPDATE_PM2_APP=vaultback` for aaPanel/PM2; a plain `npm start` process cannot relaunch itself after the graceful shutdown. See [docs/RELEASES.md](docs/RELEASES.md) for the release server, manifest format, GitHub Actions workflow, and migration precautions.
 
+For a new Linux/aaPanel install or a server-side upgrade without Git, run the hosted bootstrap installer as the PM2 project owner:
+
+~~~bash
+curl --fail --location --proto '=https' --tlsv1.2 \
+  https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-release.sh \
+  | bash -s -- /www/wwwroot/vaultback
+~~~
+
+Windows administrators can download and run `scripts/install-release.ps1` from PowerShell. The installer downloads the latest platform archive, verifies SHA-256, preserves `data/`, `.env`, and `tools/`, installs production dependencies, and starts or restarts PM2. Node.js 22+, PM2, and the platform's standard archive tools are still required; first-time `.env` and database-tool setup remain separate configuration tasks. Review the script or pin its URL to a reviewed release tag when required by deployment policy.
+
 ### Restarting from the GUI
 
 Administrators can open **Sessions & security** and choose **Restart application**. VaultBack returns an accepted response, waits briefly, and then sends itself `SIGTERM` for a graceful shutdown. The button is therefore a supervisor-triggered restart, not a self-relaunching Node process. It works with the included PM2 configuration, aaPanel/PM2, Docker with `--restart unless-stopped`, or systemd with `Restart=on-failure`. A plain `node dist/main.js` or `npm start` process will stop and must be started again manually if no process manager is supervising it. Do not use the control during an active backup.
@@ -558,4 +568,4 @@ npm start           # run the compiled application
 npm run deploy:pm2  # install, build, and restart the existing PM2 process
 ~~~
 
-For an existing aaPanel/PM2 deployment, pull the latest code and run `npm run deploy:pm2` from the project directory. The command stops on the first failure. It expects a PM2 process named `vaultback`; create that process once through aaPanel or `pm2 start ecosystem.config.cjs` before using this update command.
+`npm run deploy:pm2` is retained for source-code development deployments. For production aaPanel installations, use the versioned release archive, the hosted bootstrap installer, or **Settings → Software updates**; do not use `git pull` as the normal upgrade path.

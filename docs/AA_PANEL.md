@@ -33,6 +33,39 @@ For the recommended production installation:
 
 The release archive already contains the compiled `dist/` directory. It intentionally does not contain `data/`, `.env`, local backups, or portable database binaries.
 
+### One-command release installer
+
+For a new server or a later upgrade, you can let the hosted installer download the latest compatible release, verify its SHA-256 checksum, extract it, install production dependencies, and start or restart the PM2 application. Run it as the same aaPanel user that owns the project and PM2 process:
+
+~~~bash
+curl --fail --location --proto '=https' --tlsv1.2 \
+  https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-release.sh \
+  | bash -s -- /www/wwwroot/vaultback
+~~~
+
+The default PM2 name is `vaultback`. To use a different project name, pass the installer option after the application path:
+
+~~~bash
+curl --fail --location --proto '=https' --tlsv1.2 \
+  https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-release.sh \
+  | bash -s -- /www/wwwroot/vaultback --pm2-app my-vaultback
+~~~
+
+The installer supports both an empty directory and an existing VaultBack deployment. It never replaces `data/`, `.env`, or `tools/`. Existing deployments are rolled back if dependency installation or the post-restart health check fails. Node.js 22+, `curl`, `tar`, and PM2 are required. If you prefer to inspect the script before running it, download it to `/tmp`, review it, and execute it with `bash` instead of piping it directly to the shell.
+
+For Windows, open PowerShell as the account that owns the PM2 process and run:
+
+~~~powershell
+$installer = Join-Path $env:TEMP 'vaultback-install.ps1'
+Invoke-WebRequest -UseBasicParsing `
+  https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-release.ps1 `
+  -OutFile $installer
+powershell -ExecutionPolicy Bypass -File $installer -AppRoot 'C:\VaultBack' -Pm2App vaultback
+Remove-Item -LiteralPath $installer -Force
+~~~
+
+The Windows installer requires Node.js 22+, PowerShell, `tar.exe`, and PM2. These bootstrap scripts are convenience launchers; production administrators should inspect or pin the script URL to a reviewed release tag when organisational policy requires that.
+
 ### Git installation alternative
 
 You can upload a release ZIP, or use aaPanel’s **Pull Git project** button from the PM2 Project form shown in your screenshot.
