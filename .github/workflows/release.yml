@@ -27,10 +27,10 @@ jobs:
         run: |
           package_version="$(node -p "require('./package.json').version")"
           tag_version="${GITHUB_REF_NAME#v}"
-          test "$package_version" = "$tag_version" || {
-            echo "package.json is $package_version but the tag is $tag_version"
+          if [ "$package_version" != "$tag_version" ]; then
+            echo "::error title=Release version mismatch::package.json is $package_version but the pushed tag is v$tag_version. Update package.json and package-lock.json, then create a new tag from that commit."
             exit 1
-          }
+          fi
 
       - name: Install dependencies and build
         run: npm ci
