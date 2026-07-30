@@ -214,6 +214,7 @@ export class SystemService {
     if (!/^https:\/\//i.test(manifestUrl)) throw new BadRequestException('UPDATE_MANIFEST_URL must use HTTPS.');
     const response = await fetch(manifestUrl, { redirect: 'follow', signal: AbortSignal.timeout(10000), headers: { accept: 'application/json', 'user-agent': `VaultBack/${this.appVersion()}` } });
     if (new URL(response.url).protocol !== 'https:') throw new BadRequestException('The update server redirected to an insecure URL.');
+    if (response.status === 404) throw new BadRequestException('No published release manifest was found. Publish a successful release containing latest.json first.');
     if (!response.ok) throw new BadRequestException(`Update server returned HTTP ${response.status}.`);
     const manifest = await response.json() as ReleaseManifest;
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(String(manifest.version || ''))) throw new BadRequestException('Update manifest has an invalid version.');
