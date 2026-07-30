@@ -2,6 +2,8 @@
 
 This guide deploys VaultBack as an aaPanel Node.js/PM2 project. It assumes a Linux aaPanel server and a domain that will proxy to VaultBack on a private local port.
 
+The current release line is published on [GitHub Releases](https://github.com/dr-rei/VaultBack/releases). For a new aaPanel installation, use the `VaultBack-<version>-linux-x64.tar.gz` archive. Git is only needed for developing VaultBack itself.
+
 The field names in this guide follow aaPanel’s current Node.js Project documentation: [aaPanel Node.js Project documentation](https://www.aapanel.com/docs/Function/Node.html).
 
 ## What aaPanel needs
@@ -20,7 +22,18 @@ VaultBack uses SQLite for its own control-plane data. You do not need to create 
 
 In aaPanel, open **App Store → Node.js version manager** and install Node.js 22 or newer. The Node version selected for the project must be the same version used to build and run the application.
 
-### 2. Upload or pull the project
+### 2. Upload the versioned release archive
+
+For the recommended production installation:
+
+1. Open the [VaultBack releases page](https://github.com/dr-rei/VaultBack/releases) and download the latest `VaultBack-<version>-linux-x64.tar.gz` asset.
+2. In aaPanel File Manager, upload it to a temporary directory such as `/www/server/temp/`.
+3. Extract it and copy the extracted application directory contents into `/www/wwwroot/vaultback/`.
+4. Confirm that `dist/main.js`, `public/index.html`, `package.json`, `scripts/`, and `ecosystem.config.cjs` exist.
+
+The release archive already contains the compiled `dist/` directory. It intentionally does not contain `data/`, `.env`, local backups, or portable database binaries.
+
+### Git installation alternative
 
 You can upload a release ZIP, or use aaPanel’s **Pull Git project** button from the PM2 Project form shown in your screenshot.
 
@@ -40,7 +53,7 @@ The project directory must contain:
 /www/wwwroot/vaultback
 ~~~
 
-After the pull or upload, confirm it contains `package.json`, `src/`, `public/`, `tools/`, and `ecosystem.config.cjs` before creating the PM2 project.
+After a Git pull, confirm it contains `package.json`, `src/`, `public/`, `tools/`, and `ecosystem.config.cjs`. A release archive contains `dist/` instead of `src/` and is ready for the PM2 project after production dependencies are installed.
 
 ### 3. Prepare the project
 
@@ -99,6 +112,8 @@ APP_ENCRYPTION_KEY=the-value-generated-by-the-prepare-script
 ALLOW_ANY_LOCAL_PATH=false
 RATE_LIMIT_PER_MINUTE=800
 MAX_LOGIN_SESSIONS_PER_USER=0
+UPDATE_CHANNEL=stable
+UPDATE_PM2_APP=vaultback
 ~~~
 
 `RATE_LIMIT_PER_MINUTE` limits normal API requests per client IP in production. `MAX_LOGIN_SESSIONS_PER_USER=0` allows unlimited concurrent sessions for each account; set a positive value to remove the oldest sessions before a new login is created. Restart PM2 after changing `.env`.
@@ -124,7 +139,7 @@ Use the **PM2 Project** tab shown in aaPanel:
 
 If aaPanel asks to install dependencies automatically, leave **Do not install node_module** unchecked on the first deployment. The preparation script runs `npm ci` and `npm run build`; after those commands complete, the project is ready to start with `dist/main.js`.
 
-If you already ran the preparation script successfully, selecting **Do not install node_module** is acceptable because `node_modules/` and `dist/` are already present. If you pull a new release later, run `npm run deploy:pm2` from the project directory. This installs dependencies, builds `dist/main.js`, and restarts the existing `vaultback` PM2 process.
+If you already ran the preparation script successfully, selecting **Do not install node_module** is acceptable because `node_modules/` and `dist/` are already present. For a release archive, install production dependencies with `npm ci --omit=dev --ignore-scripts`; the archive already includes `dist/main.js`, so a source build is not required.
 
 Alternatively, start the included PM2 configuration from the terminal:
 
@@ -253,7 +268,33 @@ Then:
 
 The updater downloads the HTTPS archive, verifies SHA-256, preserves `data/`, `.env`, and `tools/`, installs production dependencies, restarts `vaultback`, and checks `/api/health`. If a step fails, it restores the previous application files and restarts PM2. See [the complete release topology and manifest guide](RELEASES.md).
 
-For a manual maintenance update, upload the release archive contents over the application files, then run `npm ci --omit=dev --ignore-scripts` and `pm2 restart vaultback --update-env`. Do not delete or overwrite `data/`, `.env`, or `tools/`.
+For a manual maintenance update, first make a recovery copy and stop PM2:
+
+~~~bash
+cd /www/wwwroot/vaultback
+stamp=$(date +%Y%m%d-%H%M%S)
+cp -a data "data-before-update-$stamp"
+cp -a .env ".env-before-update-$stamp"
+cp -a tools "tools-before-update-$stamp"
+pm2 stop vaultback
+~~~
+
+Extract the downloaded archive into a temporary directory, then copy only the application files:
+
+~~~bash
+mkdir -p /tmp/vaultback-update
+tar -xzf /tmp/VaultBack-<version>-linux-x64.tar.gz -C /tmp/vaultback-update
+release=/tmp/vaultback-update/VaultBack-<version>-linux-x64
+cd /www/wwwroot/vaultback
+cp -a "$release/dist" "$release/public" "$release/scripts" "$release/docs" .
+cp "$release/package.json" "$release/package-lock.json" "$release/ecosystem.config.cjs" "$release/README.md" "$release/LICENSE" .
+npm ci --omit=dev --ignore-scripts
+pm2 restart vaultback --update-env
+pm2 save
+curl -f http://127.0.0.1:3010/api/health
+~~~
+
+Never copy `data/`, `.env`, or `tools/` from the archive and never run `git pull` as part of this release update.
 
 ## Common problems
 

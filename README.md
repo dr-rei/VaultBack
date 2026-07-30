@@ -507,7 +507,7 @@ Current VaultBack commands use `--no-defaults` and should not read incompatible 
 
 ### `caching_sha2_password could not be loaded`
 
-The bundled client must load its authentication plugins from the application directory. Current releases pass the portable `lib/plugin` directory explicitly to the client and dump commands. Pull the latest code, run `npm run deploy:pm2`, and use **Settings → Database tools → Repair and redownload tools** if the portable package is incomplete. Do not copy a system client over the managed tools.
+The bundled client must load its authentication plugins from the application directory. Current releases pass the portable `lib/plugin` directory explicitly to the client and dump commands. Use the versioned release archive or **Settings → Software updates** for production updates, and use **Settings → Database tools → Repair and redownload tools** if the portable package is incomplete. Do not copy a system client over the managed tools.
 
 ### Connection test fails
 
