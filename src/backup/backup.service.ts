@@ -331,16 +331,17 @@ export class BackupService {
     return ['--no-defaults', ...(pluginDirectory ? [`--plugin-dir=${pluginDirectory}`] : [])];
   }
   private async listAvailableTables(connection: DatabaseConnection, database: string) {
-    const [rows] = await this.withNativeDatabaseConnection<any>(connection, client => client.query(`SHOW FULL TABLES FROM ${this.quoteIdentifier(database)}`));
+    const [rows] = await this.withNativeDatabaseConnection<any>(connection, client => client.query('SELECT TABLE_NAME AS tableName, TABLE_TYPE AS tableType FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME', [database]));
     const tables: string[] = [];
     const views: string[] = [];
     for (const row of rows as any[]) {
       const entries = Object.entries(row);
-      const name = String(entries[0]?.[1] || '').trim();
+      const valueFor = (field: string) => entries.find(([key]) => key.toLowerCase() === field.toLowerCase())?.[1];
+      const name = String(valueFor('tableName') ?? entries[0]?.[1] ?? '').trim();
       if (!name) continue;
-      const type = String(entries.find(([key]) => key.toLowerCase() === 'table_type')?.[1] ?? entries[1]?.[1] ?? '').toUpperCase();
+      const type = String(valueFor('tableType') ?? entries[1]?.[1] ?? '').toUpperCase();
       if (type === 'VIEW') views.push(name);
-      else tables.push(name);
+      else if (type === 'BASE TABLE') tables.push(name);
     }
     return { tables: [...new Set(tables)], views: [...new Set(views)] };
   }
