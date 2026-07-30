@@ -35,12 +35,18 @@ The release archive already contains the compiled `dist/` directory. It intentio
 
 ### One-command release installer
 
-For a new server or a later upgrade, you can let the hosted installer download the latest compatible release, verify its SHA-256 checksum, extract it, install production dependencies, and start or restart the PM2 application. Run it as the same aaPanel user that owns the project and PM2 process:
+For a new server or a later upgrade, you can let the hosted installer download the latest compatible release, verify its SHA-256 checksum, extract it, install production dependencies, and start or restart the PM2 application. On a standard aaPanel installation, run it as `www` so every generated file belongs to the PM2 user:
 
 ~~~bash
 curl --fail --location --proto '=https' --tlsv1.2 \
   https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-release.sh \
-  | bash -s -- /www/wwwroot/vaultback
+  | sudo -u www -H env "PATH=$PATH" bash -s -- /www/wwwroot/vaultback
+~~~
+
+If an earlier attempt was run as `root`, repair ownership once before retrying. Replace the path with the exact case-sensitive aaPanel project path:
+
+~~~bash
+sudo chown -R www:www /www/wwwroot/vaultback
 ~~~
 
 The default PM2 name is `vaultback`. To use a different project name, pass the installer option after the application path:
@@ -48,10 +54,10 @@ The default PM2 name is `vaultback`. To use a different project name, pass the i
 ~~~bash
 curl --fail --location --proto '=https' --tlsv1.2 \
   https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-release.sh \
-  | bash -s -- /www/wwwroot/vaultback --pm2-app my-vaultback
+  | sudo -u www -H env "PATH=$PATH" bash -s -- /www/wwwroot/vaultback --pm2-app my-vaultback
 ~~~
 
-The installer supports both an empty directory and an existing VaultBack deployment. It never replaces `data/`, `.env`, or `tools/`. Its health check uses loopback with the configured `APP_DOMAIN` as the `Host` header, so production host validation and reverse-proxy DNS do not prevent the local check. Existing deployments are rolled back if dependency installation or the post-restart health check fails. Node.js 22+, `curl`, `tar`, and PM2 are required. If you prefer to inspect the script before running it, download it to `/tmp`, review it, and execute it with `bash` instead of piping it directly to the shell.
+The installer supports both an empty directory and an existing VaultBack deployment. It never replaces `data/`, `.env`, or `tools/`. Its health check uses loopback with the configured `APP_DOMAIN` as the `Host` header, so production host validation and reverse-proxy DNS do not prevent the local check. Existing deployments are rolled back if dependency installation or the post-restart health check fails. Node.js 22+, `curl`, `tar`, and PM2 are required. If you prefer to inspect the script before running it, download it to `/tmp`, review it, and execute it with `sudo -u www -H bash` instead of piping it directly to the shell.
 
 For Windows, open PowerShell as the account that owns the PM2 process and run:
 
@@ -90,12 +96,10 @@ After a Git pull, confirm it contains `package.json`, `src/`, `public/`, `tools/
 
 ### 3. Prepare the project
 
-Open **aaPanel → Terminal**, then run the following as the project owner. Replace the path if you used a different directory:
+Open **aaPanel → Terminal**, then run the following as `www`. Replace the path if you used a different directory:
 
 ~~~bash
-cd /www/wwwroot/vaultback
-chmod +x scripts/aapanel-prepare.sh
-bash scripts/aapanel-prepare.sh
+sudo -u www -H env "PATH=$PATH" bash -lc 'cd /www/wwwroot/vaultback && chmod +x scripts/aapanel-prepare.sh && bash scripts/aapanel-prepare.sh'
 ~~~
 
 The script will:
@@ -177,10 +181,8 @@ If you already ran the preparation script successfully, selecting **Do not insta
 Alternatively, start the included PM2 configuration from the terminal:
 
 ~~~bash
-cd /www/wwwroot/vaultback
-pm2 start ecosystem.config.cjs
-pm2 save
-pm2 startup
+sudo -u www -H env "PATH=$PATH" bash -lc 'cd /www/wwwroot/vaultback && pm2 start ecosystem.config.cjs && pm2 save'
+sudo -u www -H env "PATH=$PATH" pm2 startup
 ~~~
 
 Keep **Auto Restart** enabled. The GUI **Restart application** action gracefully stops the Node process and depends on PM2/aaPanel to start it again. A process started directly with `npm start` will shut down and will not self-relaunch.

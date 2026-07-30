@@ -203,7 +203,7 @@ For a new Linux/aaPanel install or a server-side upgrade without Git, run the ho
 ~~~bash
 curl --fail --location --proto '=https' --tlsv1.2 \
   https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-release.sh \
-  | bash -s -- /www/wwwroot/vaultback
+  | sudo -u www -H env "PATH=$PATH" bash -s -- /www/wwwroot/vaultback
 ~~~
 
 Windows administrators can download and run `scripts/install-release.ps1` from PowerShell. The installer downloads the latest platform archive, verifies SHA-256, preserves `data/`, `.env`, and `tools/`, installs production dependencies, and starts or restarts PM2. Node.js 22+, PM2, and the platform's standard archive tools are still required; first-time `.env` and database-tool setup remain separate configuration tasks. Review the script or pin its URL to a reviewed release tag when required by deployment policy.

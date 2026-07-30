@@ -33,7 +33,7 @@ Linux/aaPanel:
 ```bash
 curl --fail --location --proto '=https' --tlsv1.2 \
   https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-release.sh \
-  | bash -s -- /www/wwwroot/vaultback
+  | sudo -u www -H env "PATH=$PATH" bash -s -- /www/wwwroot/vaultback
 ```
 
 Windows PowerShell:
@@ -45,7 +45,7 @@ powershell -ExecutionPolicy Bypass -File $installer -AppRoot 'C:\VaultBack' -Pm2
 Remove-Item -LiteralPath $installer -Force
 ```
 
-The default PM2 process name is `vaultback`; use `--pm2-app` on Linux or `-Pm2App` on Windows when it differs. The installer supports an empty application directory for first installation and an existing deployment for upgrades. It downloads the platform artifact, verifies its SHA-256 value from `latest.json`, preserves `data/`, `.env`, and `tools/`, installs production dependencies, starts or restarts PM2, and checks `/api/health` on loopback while sending the configured `APP_DOMAIN` as the `Host` header. If needed, override that header with Linux `--health-host` or Windows `-HealthHost`. Existing application files are restored automatically if the deployment fails.
+The default PM2 process name is `vaultback`; use `--pm2-app` on Linux or `-Pm2App` on Windows when it differs. On aaPanel, run the Linux command as `www` so the application and PM2 files have the correct owner. The installer supports an empty application directory for first installation and an existing deployment for upgrades. It downloads the platform artifact, verifies its SHA-256 value from `latest.json`, preserves `data/`, `.env`, and `tools/`, installs production dependencies, starts or restarts PM2, and checks `/api/health` on loopback while sending the configured `APP_DOMAIN` as the `Host` header. If needed, override that header with Linux `--health-host` or Windows `-HealthHost`. Existing application files are restored automatically if the deployment fails.
 
 Required host tools are Node.js 22 or newer, PM2, and the platform's normal `curl`/PowerShell and `tar` utilities. The command still requires first-time configuration of `.env`, the stable encryption key, and database client tools. Review the launcher before piping it into a shell; environments that require pinned inputs can replace the `main` URL with a reviewed Git tag.
 
