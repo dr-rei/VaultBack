@@ -72,6 +72,8 @@ Required host tools are Node.js 22 or newer, PM2, and the platform's normal `cur
 3. GitHub Actions runs `.github/workflows/release.yml`, builds `dist/`, creates the archive, calculates its SHA-256 checksum, creates `latest.json`, and publishes a GitHub Release.
 4. Confirm the release asset and `latest.json` are publicly readable before enabling automatic checks for users.
 
+Release descriptions are generated from the Conventional Commit prefixes between the previous tag and the new tag. `feat:` entries appear under **New features**, `fix:` under **Bug fixes**, `security:` under **Security**, and `docs:` under **Documentation**. Every release also includes upgrade notes and a direct comparison link. Use clear messages such as `feat: show application version in footer` or `fix: use POST for release checks` so the public release page explains what changed.
+
 Do not put `data/`, `.env`, credentials, local backups, or `tools/` binaries into the release archive. The package script intentionally excludes them.
 
 ## Configure a deployment
