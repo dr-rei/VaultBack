@@ -5131,3 +5131,33 @@ html[data-theme="dark"] body .update-success-note {
     align-self: flex-start;
   }
 }
+
+/* Application footer */
+body .app-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 28px;
+  padding: 16px 2px 0;
+  border-top: 1px solid var(--ui-line-soft);
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+body .app-footer-name {
+  color: var(--ui-ink);
+  font-weight: 700;
+}
+
+html[data-theme="dark"] body .app-footer-name {
+  color: #dceceb;
+}
+
+@media (max-width: 560px) {
+  body .app-footer {
+    justify-content: center;
+    margin-top: 22px;
+    padding-bottom: 4px;
+  }
+}

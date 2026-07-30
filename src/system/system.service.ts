@@ -176,6 +176,8 @@ export class SystemService {
     try { return String(JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version || '0.0.0'); } catch { return '0.0.0'; }
   }
 
+  getAppVersion() { return this.appVersion(); }
+
   private updateManifestUrl() {
     return String(process.env.UPDATE_MANIFEST_URL || 'https://github.com/dr-rei/VaultBack/releases/latest/download/latest.json').trim();
   }
