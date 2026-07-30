@@ -33,9 +33,21 @@ For the recommended production installation:
 
 The release archive already contains the compiled `dist/` directory. It intentionally does not contain `data/`, `.env`, local backups, or portable database binaries.
 
-### One-command release installer
+### Recommended aaPanel installer: install only
 
-For a new server or a later upgrade, you can let the hosted installer download the latest compatible release, verify its SHA-256 checksum, extract it, install production dependencies, and start or restart the PM2 application. On a standard aaPanel installation, run it as `www` so every generated file belongs to the PM2 user:
+This aaPanel-specific command installs the latest release under the `www` owner but deliberately does not stop, start, restart, or manage PM2. After it finishes, use the aaPanel Node.js Project GUI to restart the project:
+
+~~~bash
+curl --fail --location --proto '=https' --tlsv1.2 \
+  https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-aapanel.sh \
+  | sudo bash -s -- /www/wwwroot/vaultback
+~~~
+
+The script verifies that it is running as root, assigns `/www/wwwroot/vaultback` to `www:www`, downloads and verifies the release, installs production dependencies as `www`, and leaves the current PM2 process untouched until you restart it from aaPanel. If an earlier attempt was run as `root`, this command also repairs ownership within the application directory. Replace the path with the exact case-sensitive aaPanel project path.
+
+### General one-command release installer
+
+For non-aaPanel deployments, or when you explicitly want the installer to control PM2, use the general installer. It downloads the latest compatible release, verifies its SHA-256 checksum, extracts it, installs production dependencies, and starts or restarts the PM2 application. On aaPanel, prefer the install-only command above:
 
 ~~~bash
 curl --fail --location --proto '=https' --tlsv1.2 \

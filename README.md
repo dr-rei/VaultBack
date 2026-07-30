@@ -198,15 +198,15 @@ Rate limiting is disabled when `NODE_ENV` is anything other than `production`. I
 
 Release builds are published as versioned archives rather than Git working trees. The administrator can open **Settings → Software updates** to check the HTTPS release manifest and install a newer package. The updater verifies the manifest artifact URL and SHA-256 checksum, preserves `data/`, `.env`, and `tools/`, runs `npm ci --omit=dev`, restarts the configured PM2 process, and checks the health endpoint. A failed install is rolled back to the previous application files. Configure `UPDATE_PM2_APP=vaultback` for aaPanel/PM2; a plain `npm start` process cannot relaunch itself after the graceful shutdown. See [docs/RELEASES.md](docs/RELEASES.md) for the release server, manifest format, GitHub Actions workflow, and migration precautions.
 
-For a new Linux/aaPanel install or a server-side upgrade without Git, run the hosted bootstrap installer as the PM2 project owner:
+For a new aaPanel install or a server-side upgrade without Git, use the aaPanel-specific install-only bootstrap. It installs files as `www` and leaves PM2 under aaPanel GUI control:
 
 ~~~bash
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-release.sh \
-  | sudo -u www -H env "PATH=$PATH" bash -s -- /www/wwwroot/vaultback
+  https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-aapanel.sh \
+  | sudo bash -s -- /www/wwwroot/vaultback
 ~~~
 
-Windows administrators can download and run `scripts/install-release.ps1` from PowerShell. The installer downloads the latest platform archive, verifies SHA-256, preserves `data/`, `.env`, and `tools/`, installs production dependencies, and starts or restarts PM2. Node.js 22+, PM2, and the platform's standard archive tools are still required; first-time `.env` and database-tool setup remain separate configuration tasks. Review the script or pin its URL to a reviewed release tag when required by deployment policy.
+Windows administrators can download and run `scripts/install-release.ps1` from PowerShell. The general installer downloads the latest platform archive, verifies SHA-256, preserves `data/`, `.env`, and `tools/`, installs production dependencies, and starts or restarts PM2. Node.js 22+, PM2, and the platform's standard archive tools are still required; first-time `.env` and database-tool setup remain separate configuration tasks. Review the script or pin its URL to a reviewed release tag when required by deployment policy.
 
 ### Restarting from the GUI
 

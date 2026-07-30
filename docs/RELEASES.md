@@ -26,7 +26,17 @@ The included workflow publishes Linux x64 for aaPanel and Windows x64 packages f
 
 ## One-command bootstrap installers
 
-The repository hosts small Linux and Windows bootstrap scripts so an administrator does not need to upload an archive, extract it, run `npm ci`, and restart PM2 as separate steps. Both launchers download the latest HTTPS manifest and pass control to the Node installer included in the release process:
+The repository hosts small Linux and Windows bootstrap scripts so an administrator does not need to upload an archive, extract it, run `npm ci`, and restart PM2 as separate steps. The aaPanel launcher is intentionally install-only; aaPanel remains responsible for the PM2 stop/start controls. The general Linux and Windows launchers can manage PM2 when that is desired.
+
+aaPanel install-only mode:
+
+```bash
+curl --fail --location --proto '=https' --tlsv1.2 \
+  https://raw.githubusercontent.com/dr-rei/VaultBack/main/scripts/install-aapanel.sh \
+  | sudo bash -s -- /www/wwwroot/vaultback
+```
+
+This command runs the installer as `www`, preserves `data/`, `.env`, and `tools/`, and does not touch the current PM2 process. Restart the project from the aaPanel GUI after the command completes. It also repairs ownership of the application directory as `www:www`.
 
 Linux/aaPanel:
 

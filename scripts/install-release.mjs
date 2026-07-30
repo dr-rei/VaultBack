@@ -18,6 +18,10 @@ function argument(name, fallback = '') {
   return index >= 0 ? String(args[index + 1] || fallback) : fallback;
 }
 
+function hasFlag(name) {
+  return args.includes(`--${name}`);
+}
+
 function parseEnvFile(file) {
   const values = {};
   if (!fs.existsSync(file)) return values;
@@ -115,7 +119,8 @@ async function main() {
   const appRoot = path.resolve(argument('app-root', process.cwd()));
   const envFile = { ...parseEnvFile(path.join(appRoot, '.env')), ...process.env };
   const manifestUrl = argument('manifest-url', 'https://github.com/dr-rei/VaultBack/releases/latest/download/latest.json');
-  const pm2App = argument('pm2-app', envFile.UPDATE_PM2_APP || 'vaultback');
+  const installOnly = hasFlag('install-only');
+  const pm2App = installOnly ? '' : argument('pm2-app', envFile.UPDATE_PM2_APP || 'vaultback');
   if (!/^https:\/\//i.test(manifestUrl)) throw new Error('The release manifest URL must use HTTPS.');
   const manifestResponse = await fetch(manifestUrl, { redirect: 'follow', signal: AbortSignal.timeout(15000), headers: { accept: 'application/json', 'user-agent': 'VaultBack release installer' } });
   if (manifestResponse.status === 404) throw new Error('No published release manifest was found. Publish a successful release containing latest.json first.');
@@ -141,7 +146,7 @@ async function main() {
     const packageVersion = String(JSON.parse(fs.readFileSync(path.join(releaseRoot, 'package.json'), 'utf8')).version || ''); if (packageVersion !== targetVersion) throw new Error('Release package version does not match its manifest.');
     const protocol = String(envFile.APP_PROTOCOL || 'http').toLowerCase(); const secure = protocol === 'https' || protocol === 'both'; const port = protocol === 'both' ? Number(envFile.HTTPS_PORT || 3443) : Number(envFile.PORT || 3010); const healthUrl = `${secure ? 'https' : 'http'}://127.0.0.1:${port}/api/health`; const healthHost = argument('health-host', String(envFile.APP_DOMAIN || '127.0.0.1').split(',')[0].trim() || '127.0.0.1');
     const rollback = path.join(appRoot, 'data', 'tmp', 'release-install', `${targetVersion}-${Date.now()}`, 'rollback'); fs.mkdirSync(rollback, { recursive: true }); copyManaged(appRoot, rollback);
-    const existingPm2Process = hasPm2Process(pm2App);
+    const existingPm2Process = !installOnly && hasPm2Process(pm2App);
     if (existingPm2Process) { console.log(`Stopping PM2 process ${pm2App}...`); run('pm2', ['stop', pm2App]); await waitForHealth(healthUrl, false, healthHost); }
     try {
       copyManaged(releaseRoot, appRoot, true); run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: appRoot, stdio: 'inherit' });
@@ -150,7 +155,9 @@ async function main() {
         else { run('pm2', ['start', path.join(appRoot, 'ecosystem.config.cjs'), '--only', pm2App]); run('pm2', ['save']); }
         if (!await waitForHealth(healthUrl, true, healthHost)) throw new Error(`The updated application did not pass its health check at ${healthUrl} with Host ${healthHost}. Check PM2 logs.`);
       }
-      console.log(`VaultBack ${targetVersion} installed successfully.`);
+      console.log(installOnly
+        ? `VaultBack ${targetVersion} installed successfully. PM2 was not changed; restart the aaPanel project from its GUI.`
+        : `VaultBack ${targetVersion} installed successfully.`);
     } catch (error) {
       console.error(`Update failed; restoring ${currentVersion}...`); copyManaged(rollback, appRoot, true); try { run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: appRoot, stdio: 'inherit' }); } catch {}
       if (existingPm2Process) { try { run('pm2', ['restart', pm2App, '--update-env']); } catch {} }
