@@ -83,6 +83,44 @@ async function testStorage(id){try{const r=await api(`/api/storage/${id}/test`,{
 // Bodyless POST endpoints must not receive an empty JSON body declaration.
 async function api(url, options={}){const headers={...(options.headers||{})};if(options.body!==undefined)headers['Content-Type']='application/json';const opts={...options,headers};if(opts.method&&opts.method!=='GET'&&state.csrf&&!/\/api\/auth\/(?:login|setup)$/.test(url))opts.headers['x-csrf-token']=state.csrf;const r=await fetch(url,opts);let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(data.message||'Request failed');return data}
 
+async function downloadRunArtifact(button, id) {
+  if (!button || button.disabled) return;
+  const original = button.textContent || 'Download';
+  button.disabled = true;
+  button.textContent = 'Preparing…';
+  try {
+    const response = await fetch(`/api/runs/${encodeURIComponent(id)}/download`, { credentials: 'same-origin' });
+    if (!response.ok) {
+      let message = 'Backup download failed';
+      try { const data = await response.json(); message = data.message || message; } catch {}
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = (response.headers.get('content-disposition')?.match(/filename="?([^";]+)"?/i)?.[1] || `vaultback-backup-${id}.bin`).replace(/[\\/\0]/g, '_');
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  } catch (error) {
+    toast(error.message || 'Backup download failed', true);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+document.addEventListener('click', event => {
+  const link = event.target instanceof Element ? event.target.closest('a[href*="/api/runs/"][href$="/download"]') : null;
+  if (!link) return;
+  const match = link.getAttribute('href')?.match(/\/api\/runs\/([^/]+)\/download$/);
+  if (!match) return;
+  event.preventDefault();
+  void downloadRunArtifact(link, decodeURIComponent(match[1]));
+});
+
 // Corrected form implementations: the original forms rendered a div and then
 // passed it to FormData, which only accepts an HTMLFormElement.
 
@@ -609,7 +647,7 @@ initializeSidebar();
 document.getElementById('refresh-runs').onclick = () => { void loadCollection('runs'); };
 document.getElementById('refresh-processes').onclick = () => { void loadLiveProcesses(); };
 
-async function viewJobRuns(id, refresh = false) { const host = document.getElementById(`job-runs-${id}`); const button = document.getElementById(`job-runs-button-${id}`); if (!host) return; if (!refresh && !host.classList.contains('hidden')) { host.classList.add('hidden'); if (button) button.textContent = 'View backups'; return; } host.classList.remove('hidden'); if (!vaultbackJobRunPages[id]) vaultbackJobRunPages[id] = { page: 1, pageSize: 25, search: '' }; const options = vaultbackJobRunPages[id]; host.innerHTML = '<div class="hint">Loading stored backups…</div>'; try { const params = new URLSearchParams({ page: String(options.page), pageSize: String(options.pageSize) }); if (options.search) params.set('search', options.search); const result = await api(`/api/jobs/${encodeURIComponent(id)}/runs?${params}`); if (button) button.textContent = 'Hide backups'; const first = result.total ? ((result.page - 1) * result.pageSize) + 1 : 0; const last = Math.min(result.total, result.page * result.pageSize); host.innerHTML = `<div class="job-runs-title">Stored backups · ${result.total} total</div><div class="list-toolbar"><input id="job-runs-search-${id}" type="search" placeholder="Search filename or status" value="${esc(options.search)}" autocomplete="off" /><span class="list-summary">Showing ${first}–${last}</span></div>${result.items.length ? `<div class="job-runs-list">${result.items.map(run => `<div class="job-run-row"><div><b>${esc(run.filename || 'Backup artifact')}</b><small>${esc(run.status)} · ${fmtDate(run.startedAt)}${run.errorMessage ? ` · ${esc(run.errorMessage)}` : ''}</small></div><span>${fmtBytes(run.sizeBytes)}${run.status === 'success' ? ` <a class="small-button" href="/api/runs/${encodeURIComponent(run.id)}/download" download>Download</a>` : ''}</span></div>`).join('')}</div>` : '<div class="empty">No backups match this search.</div>'}<div class="pagination"><div><button class="small-button" id="job-runs-prev-${id}" ${result.page <= 1 ? 'disabled' : ''}>Previous</button><b>Page ${result.page} of ${result.pageCount}</b><button class="small-button" id="job-runs-next-${id}" ${result.page >= result.pageCount ? 'disabled' : ''}>Next</button></div></div>`; document.getElementById(`job-runs-search-${id}`).oninput = event => { clearTimeout(vaultbackSearchTimers[`job-${id}`]); vaultbackSearchTimers[`job-${id}`] = setTimeout(() => { options.search = event.target.value.trim(); options.page = 1; void viewJobRuns(id, true); }, 300); }; document.getElementById(`job-runs-prev-${id}`).onclick = () => { options.page = Math.max(1, options.page - 1); void viewJobRuns(id, true); }; document.getElementById(`job-runs-next-${id}`).onclick = () => { options.page = Math.min(result.pageCount, options.page + 1); void viewJobRuns(id, true); }; } catch (e) { host.innerHTML = `<div class="callout">Unable to load backups: ${esc(e.message)}</div>`; } }
+async function viewJobRuns(id, refresh = false) { const host = document.getElementById(`job-runs-${id}`); const button = document.getElementById(`job-runs-button-${id}`); if (!host) return; if (!refresh && !host.classList.contains('hidden')) { host.classList.add('hidden'); if (button) button.textContent = 'View backups'; return; } host.classList.remove('hidden'); if (!vaultbackJobRunPages[id]) vaultbackJobRunPages[id] = { page: 1, pageSize: 25, search: '' }; const options = vaultbackJobRunPages[id]; host.innerHTML = '<div class="hint">Loading downloadable backups…</div>'; try { const params = new URLSearchParams({ page: String(options.page), pageSize: String(options.pageSize) }); if (options.search) params.set('search', options.search); const result = await api(`/api/jobs/${encodeURIComponent(id)}/runs?${params}`); if (button) button.textContent = 'Hide backups'; const first = result.total ? ((result.page - 1) * result.pageSize) + 1 : 0; const last = Math.min(result.total, result.page * result.pageSize); host.innerHTML = `<div class="job-runs-title">Downloadable backups · ${result.total} total</div><div class="list-toolbar"><input id="job-runs-search-${id}" type="search" placeholder="Search filename" value="${esc(options.search)}" autocomplete="off" /><span class="list-summary">Showing ${first}–${last}</span></div>${result.items.length ? `<div class="job-runs-list">${result.items.map(run => `<div class="job-run-row"><div><b>${esc(run.filename)}</b><small>Completed · ${fmtDate(run.startedAt)}</small></div><span>${fmtBytes(run.sizeBytes)} <button type="button" class="small-button" onclick="downloadRunArtifact(this, '${esc(run.id)}')">Download</button></span></div>`).join('')}</div>` : '<div class="empty">No downloadable backups match this search.</div>'}<div class="pagination"><div><button class="small-button" id="job-runs-prev-${id}" ${result.page <= 1 ? 'disabled' : ''}>Previous</button><b>Page ${result.page} of ${result.pageCount}</b><button class="small-button" id="job-runs-next-${id}" ${result.page >= result.pageCount ? 'disabled' : ''}>Next</button></div></div>`; document.getElementById(`job-runs-search-${id}`).oninput = event => { clearTimeout(vaultbackSearchTimers[`job-${id}`]); vaultbackSearchTimers[`job-${id}`] = setTimeout(() => { options.search = event.target.value.trim(); options.page = 1; void viewJobRuns(id, true); }, 300); }; document.getElementById(`job-runs-prev-${id}`).onclick = () => { options.page = Math.max(1, options.page - 1); void viewJobRuns(id, true); }; document.getElementById(`job-runs-next-${id}`).onclick = () => { options.page = Math.min(result.pageCount, options.page + 1); void viewJobRuns(id, true); }; } catch (e) { host.innerHTML = `<div class="callout">Unable to load backups: ${esc(e.message)}</div>`; } }
 
 async function exportFullConfig() { const password = $('#full-export-password').value; if (password.length < 12) { toast('Use an export password of at least 12 characters', true); return; } try { const response = await fetch('/api/settings/export/full', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-csrf-token': state.csrf }, body: JSON.stringify({ password }) }); if (!response.ok) { let message = 'Encrypted export failed'; try { const data = await response.json(); message = data.message || message; } catch {} throw new Error(message); } const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `vaultback-encrypted-export-${new Date().toISOString().slice(0, 10)}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); $('#full-export-password').value = ''; toast('Encrypted migration package exported'); } catch (e) { toast(e.message, true); } }
 async function importFullConfig() { const file = $('#full-import-file').files?.[0]; const password = $('#full-import-password').value; if (!file) { toast('Choose an encrypted VaultBack export package first', true); return; } if (password.length < 12) { toast('Enter the export password of at least 12 characters', true); return; } if (file.size > 60 * 1024 * 1024) { toast('The export package is too large', true); return; } try { const pkg = JSON.parse(await file.text()); const result = await api('/api/settings/import/full', { method: 'POST', body: JSON.stringify({ password, package: pkg }) }); $('#full-import-file').value = ''; $('#full-import-password').value = ''; toast(result.message || 'Import staged; restart VaultBack to activate it'); } catch (e) { toast(e.message, true); } }
@@ -628,14 +666,27 @@ function processCardMarkup(item) {
   const active = item.status === 'running';
   const logs = (item.logs || []).slice(-24);
   const id = String(item.id || 'unknown');
-  return `<article class="process-card ${esc(item.status || 'unknown')}"><div class="process-card-head"><div><span class="process-state ${active ? 'running' : esc(item.status || 'unknown')}"><span class="process-state-dot"></span>${esc(processStatusText(item))}</span><h3>${esc(item.jobName || 'Backup process')}</h3><small>Process ${esc(id.slice(0, 8))} · Started ${esc(fmtDate(item.startedAt))}</small></div><strong class="process-stage">${esc(processStageLabels[item.stage] || item.stage || 'Processing')}</strong></div><div class="process-meta"><span>Duration <b>${processDuration(item)}</b></span><span>Updated <b>${esc(fmtDate(item.updatedAt))}</b></span></div><div class="process-log" aria-live="polite">${logs.length ? logs.map(log => `<div>${esc(log)}</div>`).join('') : '<div class="process-log-empty">Waiting for process output…</div>'}</div></article>`;
+  return `<article class="process-card ${esc(item.status || 'unknown')}" data-process-id="${esc(id)}"><div class="process-card-head"><div><span class="process-state ${active ? 'running' : esc(item.status || 'unknown')}"><span class="process-state-dot"></span>${esc(processStatusText(item))}</span><h3>${esc(item.jobName || 'Backup process')}</h3><small>Process ${esc(id.slice(0, 8))} · Started ${esc(fmtDate(item.startedAt))}</small></div><strong class="process-stage">${esc(processStageLabels[item.stage] || item.stage || 'Processing')}</strong></div><div class="process-meta"><span>Duration <b>${processDuration(item)}</b></span><span>Updated <b>${esc(fmtDate(item.updatedAt))}</b></span></div><div class="process-log" aria-live="polite">${logs.length ? logs.map(log => `<div>${esc(log)}</div>`).join('') : '<div class="process-log-empty">Waiting for process output…</div>'}</div></article>`;
 }
 
 function renderProcessList(element) {
   if (!element) return;
+  const previousLogs = new Map([...element.querySelectorAll('.process-card')].map(card => {
+    const log = card.querySelector('.process-log');
+    if (!log) return [card.dataset.processId, null];
+    const distanceFromBottom = log.scrollHeight - log.scrollTop - log.clientHeight;
+    return [card.dataset.processId, { scrollTop: log.scrollTop, followBottom: distanceFromBottom <= 32 }];
+  }));
   element.innerHTML = state.processes.length
     ? state.processes.map(processCardMarkup).join('')
     : '<div class="empty process-empty">No active or recent processes. Start a scheduled backup or use Run now to see live progress here.</div>';
+  element.querySelectorAll('.process-card').forEach(card => {
+    const log = card.querySelector('.process-log');
+    if (!log) return;
+    const previous = previousLogs.get(card.dataset.processId);
+    if (!previous || previous.followBottom) log.scrollTop = log.scrollHeight;
+    else log.scrollTop = Math.min(previous.scrollTop, log.scrollHeight);
+  });
 }
 
 function renderProcesses() {
