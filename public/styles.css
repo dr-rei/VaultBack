@@ -5029,6 +5029,91 @@ html[data-theme="dark"] body .dependency-progress {
   background: #23434d;
 }
 
+/* Software release/update panel */
+body .update-panel {
+  margin-top: 22px;
+}
+
+body .update-panel > .panel-head {
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+body .update-status {
+  min-height: 70px;
+}
+
+body .update-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+body .update-summary div {
+  padding: 12px;
+  border: 1px solid var(--ui-line-soft);
+  border-radius: 10px;
+  background: var(--ui-surface-muted);
+}
+
+body .update-summary span,
+body .update-summary b {
+  display: block;
+}
+
+body .update-summary span {
+  margin-bottom: 5px;
+  color: var(--ui-muted);
+  font-size: 10px;
+}
+
+body .update-summary b {
+  color: var(--ui-ink);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+body .tag.update-available {
+  border: 1px solid rgba(35, 137, 104, .35);
+  background: rgba(35, 137, 104, .12);
+  color: #237f62;
+}
+
+body .update-available-note,
+body .update-success-note {
+  margin: 14px 0 0;
+  color: var(--ui-teal-dark);
+  font-size: 11px;
+}
+
+body .update-success-note {
+  color: #237f62;
+}
+
+html[data-theme="dark"] body .tag.update-available {
+  border-color: rgba(113, 208, 174, .45);
+  background: rgba(55, 164, 127, .20);
+  color: #a5ecd0;
+}
+
+html[data-theme="dark"] body .update-available-note,
+html[data-theme="dark"] body .update-success-note {
+  color: #91ddd0;
+}
+
+@media (max-width: 700px) {
+  body .update-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  body .update-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 560px) {
   body .dependency-tools-panel > .panel-head {
     align-items: flex-start;

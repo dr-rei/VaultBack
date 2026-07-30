@@ -9,6 +9,7 @@ backups/
 .env
 *.log
 .npm-cache/
+release/
 # Third-party portable database clients are supplied and managed at runtime.
 # Keep the whole extracted pack local while retaining the empty bin placeholder.
 tools/**/*

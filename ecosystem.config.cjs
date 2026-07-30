@@ -12,7 +12,8 @@ module.exports = {
       max_memory_restart: '512M',
       kill_timeout: 5000,
       env: {
-        NODE_ENV: 'production'
+        NODE_ENV: 'production',
+        UPDATE_PM2_APP: 'vaultback'
       }
     }
   ]

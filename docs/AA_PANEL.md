@@ -230,17 +230,30 @@ Back up these items before upgrades or server migration:
 
 Never expose `.env`, `data/vaultback.sqlite`, `.encryption-key`, or local backup files through the website’s public document root. Keep `APP_ENCRYPTION_KEY` unchanged during redeployment.
 
-## Updating the application
+## Updating the application without Git
 
-~~~bash
-cd /www/wwwroot/vaultback
-cp -a data "data-before-update-$(date +%Y%m%d-%H%M%S)"
-git pull                         # or upload the new release files
-npm run deploy:pm2
-pm2 save
+The recommended production flow uses the versioned release feed and the administrator-only **Settings → Software updates** panel. It does not require GitHub SSH keys or `git pull` after the initial installation.
+
+Before enabling it, add the PM2 process name to `.env`:
+
+~~~env
+UPDATE_PM2_APP=vaultback
+UPDATE_CHANNEL=stable
+# Optional only when using a private/self-hosted release server:
+# UPDATE_MANIFEST_URL=https://updates.example.com/vaultback/latest.json
 ~~~
 
-After updating, sign in and run one manual backup before removing the pre-update copy of `data/`.
+Then:
+
+1. Keep the aaPanel project in PM2 mode with **Auto Restart** enabled and one instance.
+2. Keep a recovery copy of `data/`, `.env`, and the stable `APP_ENCRYPTION_KEY`.
+3. Sign in as an administrator and open **Settings → Software updates**.
+4. Select **Check for updates**, review the release notes, and select **Install update**.
+5. Wait for PM2 to restart the process. Do not run a backup during the update.
+
+The updater downloads the HTTPS archive, verifies SHA-256, preserves `data/`, `.env`, and `tools/`, installs production dependencies, restarts `vaultback`, and checks `/api/health`. If a step fails, it restores the previous application files and restarts PM2. See [the complete release topology and manifest guide](RELEASES.md).
+
+For a manual maintenance update, upload the release archive contents over the application files, then run `npm ci --omit=dev --ignore-scripts` and `pm2 restart vaultback --update-env`. Do not delete or overwrite `data/`, `.env`, or `tools/`.
 
 ## Common problems
 

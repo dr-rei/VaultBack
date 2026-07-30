@@ -13,6 +13,9 @@
     "start:dev": "tsx watch src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "deploy:pm2": "npm ci && npm run build && pm2 restart vaultback --update-env",
+    "package:release": "npm run build && node scripts/package-release.mjs",
+    "release:manifest": "node scripts/create-release-manifest.mjs",
+    "update:release": "node scripts/update.mjs",
     "reset-data": "node scripts/reset-data.mjs",
     "reset-admin": "node scripts/reset-admin.mjs"
   },

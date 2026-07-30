@@ -2,10 +2,14 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { environmentName, isProductionEnvironment, rateLimitPerMinute } from '../common/app-config';
 import { DatabaseService } from '../database/database.service';
 
 export type NotificationEvent = 'backup_success' | 'backup_failed' | 'capacity_warning';
+
+type ReleaseArtifact = { url: string; sha256: string; bytes?: number };
+type ReleaseManifest = { version: string; channel?: string; releaseNotesUrl?: string; publishedAt?: string; artifacts: Record<string, ReleaseArtifact> };
 
 @Injectable()
 export class SystemService {
@@ -166,6 +170,67 @@ export class SystemService {
     }, 350);
     timer.unref?.();
     return { ok: true, message: 'Restart requested. The service manager should bring VaultBack back online shortly.' };
+  }
+
+  private appVersion() {
+    try { return String(JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version || '0.0.0'); } catch { return '0.0.0'; }
+  }
+
+  private updateManifestUrl() {
+    return String(process.env.UPDATE_MANIFEST_URL || 'https://github.com/dr-rei/VaultBack/releases/latest/download/latest.json').trim();
+  }
+
+  private updateStatusPath() { return path.join(this.store.dataDir, 'update-status.json'); }
+
+  private readUpdateStatus(): Record<string, any> {
+    try { return JSON.parse(fs.readFileSync(this.updateStatusPath(), 'utf8')); } catch { return {}; }
+  }
+
+  private writeUpdateStatus(value: Record<string, unknown>) {
+    const file = this.updateStatusPath(); const temporary = `${file}.tmp`;
+    fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(temporary, `${JSON.stringify({ ...this.readUpdateStatus(), ...value, updatedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 }); fs.renameSync(temporary, file);
+  }
+
+  private compareVersions(left: string, right: string) {
+    const parse = (value: string) => String(value).replace(/^v/, '').split('-')[0].split('.').map(part => Number.parseInt(part, 10) || 0);
+    const a = parse(left); const b = parse(right);
+    for (let index = 0; index < 3; index += 1) if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) - (b[index] || 0);
+    return 0;
+  }
+
+  private releaseArtifact(manifest: ReleaseManifest) {
+    const key = `${process.platform}-${process.arch}`; const artifact = manifest.artifacts?.[key];
+    if (!artifact || !/^https:\/\//i.test(String(artifact.url || '')) || !/^[a-f0-9]{64}$/i.test(String(artifact.sha256 || ''))) return null;
+    return { key, url: String(artifact.url), sha256: String(artifact.sha256).toLowerCase(), bytes: Number(artifact.bytes || 0) || undefined };
+  }
+
+  updateInfo() {
+    const saved = this.readUpdateStatus(); const currentVersion = this.appVersion(); const latest = saved.latestVersion ? String(saved.latestVersion) : '';
+    return { enabled: Boolean(this.updateManifestUrl()), currentVersion, channel: String(process.env.UPDATE_CHANNEL || 'stable'), latestVersion: latest || null, updateAvailable: Boolean(latest && this.compareVersions(latest, currentVersion) > 0 && saved.artifact), releaseNotesUrl: saved.releaseNotesUrl || null, publishedAt: saved.publishedAt || null, checkedAt: saved.checkedAt || null, status: saved.state || 'not_checked', progress: Number(saved.progress || 0), error: saved.error || '' };
+  }
+
+  async checkForUpdate() {
+    const manifestUrl = this.updateManifestUrl();
+    if (!/^https:\/\//i.test(manifestUrl)) throw new BadRequestException('UPDATE_MANIFEST_URL must use HTTPS.');
+    const response = await fetch(manifestUrl, { redirect: 'follow', signal: AbortSignal.timeout(10000), headers: { accept: 'application/json', 'user-agent': `VaultBack/${this.appVersion()}` } });
+    if (new URL(response.url).protocol !== 'https:') throw new BadRequestException('The update server redirected to an insecure URL.');
+    if (!response.ok) throw new BadRequestException(`Update server returned HTTP ${response.status}.`);
+    const manifest = await response.json() as ReleaseManifest;
+    if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(String(manifest.version || ''))) throw new BadRequestException('Update manifest has an invalid version.');
+    const artifact = this.releaseArtifact(manifest); const currentVersion = this.appVersion(); const available = Boolean(artifact && this.compareVersions(String(manifest.version), currentVersion) > 0);
+    this.writeUpdateStatus({ state: available ? 'available' : 'current', checkedAt: new Date().toISOString(), currentVersion, latestVersion: String(manifest.version), channel: String(manifest.channel || process.env.UPDATE_CHANNEL || 'stable'), releaseNotesUrl: /^https:\/\//i.test(String(manifest.releaseNotesUrl || '')) ? manifest.releaseNotesUrl : '', publishedAt: manifest.publishedAt || '', artifact: artifact || null, error: '' });
+    return this.updateInfo();
+  }
+
+  startUpdate(userId: string) {
+    const saved = this.readUpdateStatus(); const currentVersion = this.appVersion(); const targetVersion = String(saved.latestVersion || '');
+    if (!saved.artifact || !targetVersion || this.compareVersions(targetVersion, currentVersion) <= 0) throw new BadRequestException('Check for a newer release before starting an update.');
+    const script = path.join(process.cwd(), 'scripts', 'update.mjs'); const configuredProtocol = String(process.env.APP_PROTOCOL || 'http').toLowerCase(); const protocol = configuredProtocol === 'https' || configuredProtocol === 'both' ? 'https' : 'http'; const port = configuredProtocol === 'both' ? Number(process.env.HTTPS_PORT || 3443) : Number(process.env.PORT || 3010); const healthUrl = `${protocol}://127.0.0.1:${port}/api/health`;
+    const child = spawn(process.execPath, [script, '--app-root', process.cwd(), '--data-dir', this.store.dataDir, '--version', targetVersion, '--url', String(saved.artifact.url), '--sha256', String(saved.artifact.sha256), '--health-url', healthUrl, ...(process.env.UPDATE_PM2_APP ? ['--pm2-app', String(process.env.UPDATE_PM2_APP)] : [])], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
+    child.once('error', error => this.writeUpdateStatus({ state: 'failed', error: String(error.message || error).slice(0, 300) })); child.unref();
+    this.writeUpdateStatus({ state: 'queued', progress: 0, targetVersion, error: '' }); this.audit(userId, 'system.update.start', undefined, targetVersion);
+    const timer = setTimeout(() => { try { process.kill(process.pid, 'SIGTERM'); } catch (error: any) { this.logger.error(`Update shutdown failed: ${String(error?.message || error)}`); } }, 900); timer.unref?.();
+    return { ok: true, state: 'queued', targetVersion, message: 'Update started. The application will restart through its configured process manager.' };
   }
 
   audit(userId: string | null, action: string, entityType?: string, entityId?: string, metadata?: unknown) {

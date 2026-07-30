@@ -1,0 +1,64 @@
+name: Build VaultBack release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Package Linux x64 release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          test "$package_version" = "$tag_version" || {
+            echo "package.json is $package_version but the tag is $tag_version"
+            exit 1
+          }
+
+      - name: Install dependencies and build
+        run: npm ci
+
+      - name: Create release archive
+        run: npm run package:release -- --version "${GITHUB_REF_NAME#v}" --platform linux --arch x64 --output release
+
+      - name: Create Windows x64 release archive
+        run: npm run package:release -- --version "${GITHUB_REF_NAME#v}" --platform win32 --arch x64 --output release
+
+      - name: Create update manifest
+        shell: bash
+        run: |
+          archive="release/VaultBack-${GITHUB_REF_NAME#v}-linux-x64.tar.gz"
+          npm run release:manifest -- \
+            --version "${GITHUB_REF_NAME#v}" \
+            --tag "$GITHUB_REF_NAME" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output release/latest.json \
+            --artifact "linux-x64=$archive" \
+            --artifact "win32-x64=release/VaultBack-${GITHUB_REF_NAME#v}-win32-x64.tar.gz"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release/VaultBack-*.tar.gz \
+            release/latest.json \
+            --title "VaultBack $GITHUB_REF_NAME" \
+            --generate-notes

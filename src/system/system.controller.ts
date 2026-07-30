@@ -15,4 +15,7 @@ export class SystemController {
   @Post('export/full') fullExport(@Req() req: FastifyRequest, @Body() body: any, @Res() reply: FastifyReply) { const session = this.auth.requireAdmin(req); const result = this.system.fullExport(String(body.password || '')); this.system.audit(session.user_id, 'config.full_export'); reply.header('Content-Disposition', 'attachment; filename="vaultback-encrypted-export.json"'); reply.type('application/json'); return reply.send(JSON.stringify(result)); }
   @Post('import/full') fullImport(@Req() req: FastifyRequest, @Body() body: any) { const session = this.auth.requireAdmin(req); const result = this.system.importFull(body.package, String(body.password || '')); this.system.audit(session.user_id, 'config.full_import'); return result; }
   @Post('restart') restart(@Req() req: FastifyRequest, @Res() reply: FastifyReply) { const session = this.auth.requireAdmin(req, true); return reply.code(202).send(this.system.requestRestart(session.user_id)); }
+  @Get('update') updateInfo(@Req() req: FastifyRequest) { this.auth.requireAdmin(req); return this.system.updateInfo(); }
+  @Post('update/check') checkUpdate(@Req() req: FastifyRequest) { this.auth.requireAdmin(req); return this.system.checkForUpdate(); }
+  @Post('update/install') installUpdate(@Req() req: FastifyRequest, @Res() reply: FastifyReply) { const session = this.auth.requireAdmin(req, true); return reply.code(202).send(this.system.startUpdate(session.user_id)); }
 }

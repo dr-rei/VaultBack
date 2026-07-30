@@ -10,6 +10,7 @@ VaultBack combines a GUI, JSON API, scheduler, portable database tools, encrypte
 |---|---|
 | Run locally for development | Follow [the local development quick start](#quick-start) |
 | Deploy on aaPanel with PM2 | Follow [the aaPanel and PM2 deployment guide](docs/AA_PANEL.md) |
+| Publish releases and update from the GUI | Follow [the release and in-app update guide](docs/RELEASES.md) |
 | Deploy with Docker | Follow [the Docker deployment section](#docker-deployment) |
 | Deploy on Linux with systemd | Follow [the systemd deployment section](#linux-deployment-with-systemd) |
 | Understand usage restrictions | Read [the VaultBack terms of use](docs/TERMS_OF_USE.md) |
@@ -40,6 +41,7 @@ VaultBack combines a GUI, JSON API, scheduler, portable database tools, encrypte
 
 - [Main deployment and operations documentation](#deployment-requirements)
 - [aaPanel and PM2 deployment guide](docs/AA_PANEL.md)
+- [Versioned releases and in-app updates](docs/RELEASES.md)
 - [Portable database-tools guide](tools/README.md)
 - [Terms of use and third-party component notice](docs/TERMS_OF_USE.md)
 
@@ -184,10 +186,17 @@ Important settings:
 | `NODE_ENV` | `development` behavior when unset | Set to `production` to enable production protections. Development exposes detailed 500-level error messages for debugging. |
 | `RATE_LIMIT_PER_MINUTE` | `800` | Production only. Maximum normal API requests per client IP per minute. Login and setup use a separate limit of 10 attempts per 15 minutes. |
 | `MAX_LOGIN_SESSIONS_PER_USER` | `0` | Maximum active login sessions per user. `0` means unlimited. When positive, the oldest sessions are removed before a new login is created. |
+| `UPDATE_MANIFEST_URL` | GitHub release feed | Optional HTTPS URL for a custom `latest.json` release manifest. Leave unset to use the public VaultBack release feed. |
+| `UPDATE_CHANNEL` | `stable` | Release channel label shown in the administrator update panel. |
+| `UPDATE_PM2_APP` | unset | PM2 process name used by the in-app updater. Set this to `vaultback` for aaPanel/PM2 deployments. |
 
 For direct HTTPS, set `APP_PROTOCOL=https`, `PORT` to the HTTPS port, and provide the certificate and private-key files. For `APP_PROTOCOL=both`, VaultBack serves HTTPS on `HTTPS_PORT` and returns a permanent redirect from `HTTP_PORT`; it does not serve the GUI over plaintext HTTP. With a reverse proxy, keep `APP_PROTOCOL=http`, bind VaultBack to localhost, and terminate TLS at the proxy.
 
 Rate limiting is disabled when `NODE_ENV` is anything other than `production`. In production, static frontend files are not rate-limited, normal API requests use `RATE_LIMIT_PER_MINUTE`, and login/setup requests use the stricter authentication bucket. The administrator-only Sessions & security page displays the current per-IP usage, remaining quota, reset time, and active sessions. Production 500-level responses always return `Internal server error`; the full error is logged by the server. Restart VaultBack after changing these values.
+
+### Versioned releases and in-app updates
+
+Release builds are published as versioned archives rather than Git working trees. The administrator can open **Settings → Software updates** to check the HTTPS release manifest and install a newer package. The updater verifies the manifest artifact URL and SHA-256 checksum, preserves `data/`, `.env`, and `tools/`, runs `npm ci --omit=dev`, restarts the configured PM2 process, and checks the health endpoint. A failed install is rolled back to the previous application files. Configure `UPDATE_PM2_APP=vaultback` for aaPanel/PM2; a plain `npm start` process cannot relaunch itself after the graceful shutdown. See [docs/RELEASES.md](docs/RELEASES.md) for the release server, manifest format, GitHub Actions workflow, and migration precautions.
 
 ### Restarting from the GUI
 
