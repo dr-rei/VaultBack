@@ -338,7 +338,7 @@ export class BackupService {
       const entries = Object.entries(row);
       const name = String(entries[0]?.[1] || '').trim();
       if (!name) continue;
-      const type = String(entries.find(([key]) => key.toLowerCase() === 'table_type')?.[1] || '').toUpperCase();
+      const type = String(entries.find(([key]) => key.toLowerCase() === 'table_type')?.[1] ?? entries[1]?.[1] ?? '').toUpperCase();
       if (type === 'VIEW') views.push(name);
       else tables.push(name);
     }
