@@ -22,5 +22,6 @@ id www >/dev/null 2>&1 || { echo 'The aaPanel www user does not exist.' >&2; exi
 
 mkdir -p "$APP_ROOT"
 chown -R www:www "$APP_ROOT"
-curl --fail --location --proto '=https' --tlsv1.2 "$BASE_URL/install-release.mjs" --output "$TEMP_DIR/install-release.mjs"
+chown www:www "$TEMP_DIR"
+sudo -u www -H env "PATH=$PATH" curl --fail --location --proto '=https' --tlsv1.2 "$BASE_URL/install-release.mjs" --output "$TEMP_DIR/install-release.mjs"
 sudo -u www -H env "PATH=$PATH" node "$TEMP_DIR/install-release.mjs" --app-root "$APP_ROOT" --install-only "$@"
