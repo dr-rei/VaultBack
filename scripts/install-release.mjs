@@ -10,7 +10,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 const MAX_ARCHIVE_BYTES = 500 * 1024 * 1024;
-const managedPaths = ['dist', 'public', 'package.json', 'package-lock.json', 'ecosystem.config.cjs', 'scripts', 'docs', 'README.md', 'LICENSE'];
+const managedPaths = ['dist', 'public', 'package.json', 'package-lock.json', 'ecosystem.config.cjs', 'scripts', 'docs', 'README.md', 'LICENSE', '.env.example'];
 const args = process.argv.slice(2);
 
 function argument(name, fallback = '') {

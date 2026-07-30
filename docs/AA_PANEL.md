@@ -117,8 +117,8 @@ sudo -u www -H env "PATH=$PATH" bash -lc 'cd /www/wwwroot/vaultback && chmod +x 
 The script will:
 
 1. Verify Node.js 22 or newer.
-2. Install dependencies with `npm ci`.
-3. Compile the backend to `dist/`.
+2. Install dependencies with `npm ci` for a source checkout or production-only dependencies for a release archive.
+3. Compile the backend to `dist/` only when `src/` and `tsconfig.json` are present; release archives already contain `dist/main.js`.
 4. Create `data/backups/` with restricted permissions.
 5. Create `.env` from `.env.example` if needed.
 6. Generate a stable encryption key if `.env` does not have one.
@@ -188,7 +188,7 @@ Use the **PM2 Project** tab shown in aaPanel:
 | Do not install `node_module` | Checked after the install-only script has run `npm ci` |
 | Run User | `www` |
 
-If aaPanel asks to install dependencies automatically, leave **Do not install node_module** unchecked on the first deployment. The preparation script runs `npm ci` and `npm run build`; after those commands complete, the project is ready to start with `dist/main.js`.
+If aaPanel asks to install dependencies automatically, check **Do not install node_module** after the release installer or preparation script has completed. For a source checkout, leave it unchecked only when aaPanel must install dependencies before you run the preparation script. The release installer and preparation script already install the correct dependencies as `www`.
 
 If you already ran the preparation script successfully, selecting **Do not install node_module** is acceptable because `node_modules/` and `dist/` are already present. For a release archive, install production dependencies with `npm ci --omit=dev --ignore-scripts`; the archive already includes `dist/main.js`, so a source build is not required.
 

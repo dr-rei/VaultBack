@@ -26,7 +26,7 @@ fs.mkdirSync(outputRoot, { recursive: true });
 fs.rmSync(stagingRoot, { recursive: true, force: true });
 fs.rmSync(archivePath, { force: true });
 
-const files = ['package.json', 'package-lock.json', 'ecosystem.config.cjs', 'README.md', 'LICENSE'];
+const files = ['package.json', 'package-lock.json', 'ecosystem.config.cjs', 'README.md', 'LICENSE', '.env.example'];
 const directories = ['dist', 'public', 'scripts', 'docs'];
 for (const file of files) {
   const source = path.join(projectRoot, file);
