@@ -137,6 +137,40 @@ Client tools are managed inside the application directory under `tools/`. VaultB
 
 ## Choose a deployment mode
 
+### aaPanel GUI values
+
+After running the aaPanel install-only command, configure the Node.js project in aaPanel with these values. The project must run as `www`; do not start it as `root`.
+
+#### PM2 Project tab (recommended)
+
+| aaPanel field | Value |
+|---|---|
+| Project Name | `vaultback` |
+| Node Version | Node.js 22 or newer |
+| Startup File | `dist/main.js` |
+| Run Directory | `/www/wwwroot/vaultback` (use your exact path and letter case) |
+| Cluster | `1` |
+| Memory Limit | `512 MB` or `1024 MB` |
+| Auto Restart | On |
+| Package Manager | `npm` |
+| Do not install `node_module` | Checked when the installer already ran `npm ci` |
+| Run User | `www` |
+
+Keep the Environment Variables field empty when using `.env` in the project directory. Never paste `APP_ENCRYPTION_KEY`, database passwords, storage tokens, or other secrets into screenshots or Git. After confirming the PM2 project, use **Start** or **Restart** in aaPanel; the installer itself does not control PM2.
+
+#### Default Project tab (alternative)
+
+| aaPanel field | Value |
+|---|---|
+| Path | `/www/wwwroot/vaultback` |
+| Name | `vaultback` |
+| Run option | `npm start` |
+| Port | `3010` (or the `PORT` value in `.env`) |
+| User | `www` |
+| Node | Node.js 22 or newer |
+
+PM2 Project mode is preferred because aaPanel provides clearer restart, logs, memory, and boot-persistence controls. With a reverse proxy, keep VaultBack bound to `127.0.0.1` and proxy the domain to the configured application port.
+
 ### Portable client deployment
 
 VaultBack can discover client binaries inside the application directory. Use this layout:

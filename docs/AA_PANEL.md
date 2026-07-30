@@ -185,6 +185,8 @@ Use the **PM2 Project** tab shown in aaPanel:
 | Memory Limit | `512 MB` or `1024 MB` |
 | Auto Restart | On |
 | Package Manager | `npm` |
+| Do not install `node_module` | Checked after the install-only script has run `npm ci` |
+| Run User | `www` |
 
 If aaPanel asks to install dependencies automatically, leave **Do not install node_module** unchecked on the first deployment. The preparation script runs `npm ci` and `npm run build`; after those commands complete, the project is ready to start with `dist/main.js`.
 
