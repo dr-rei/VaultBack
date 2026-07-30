@@ -1,20 +1,77 @@
 # VaultBack
 
-VaultBack is a self-hosted database backup control plane for MySQL and MariaDB. It provides a browser GUI and a NestJS/Fastify backend in one process. It stores its own configuration in SQLite, encrypts database and storage credentials, schedules backups, compresses artifacts, uploads them to multiple destinations, rotates old files, and records backup history and checksums.
+> Self-hosted MySQL and MariaDB backup automation with a browser-based control plane.
 
-For a visual aaPanel Node.js/PM2 deployment walkthrough, see [docs/AA_PANEL.md](docs/AA_PANEL.md).
+VaultBack combines a GUI, JSON API, scheduler, portable database tools, encrypted configuration storage, and backup history in one Node.js application. It is designed for administrators who need scheduled backups without installing a separate database server for VaultBack itself.
 
-VaultBack is source-available for personal and educational use. Commercial use requires written permission from the copyright holder. See [docs/TERMS_OF_USE.md](docs/TERMS_OF_USE.md) for the full terms, warranty disclaimer, liability limitation, and third-party component notice.
+## Start here
 
-## What is deployed
+| Goal | Recommended guide |
+|---|---|
+| Run locally for development | Follow [the local development quick start](#quick-start) |
+| Deploy on aaPanel with PM2 | Follow [the aaPanel and PM2 deployment guide](docs/AA_PANEL.md) |
+| Deploy with Docker | Follow [the Docker deployment section](#docker-deployment) |
+| Deploy on Linux with systemd | Follow [the systemd deployment section](#linux-deployment-with-systemd) |
+| Understand usage restrictions | Read [the VaultBack terms of use](docs/TERMS_OF_USE.md) |
+| Prepare portable database clients | Read [the portable database-tools guide](tools/README.md) |
 
-The application has three parts:
+## Product overview
 
-- **GUI**: static files in `public/`, served by the backend.
-- **Backend and scheduler**: compiled TypeScript in `dist/`.
-- **Control-plane database and local artifacts**: `data/`.
+### Main capabilities
 
-The control-plane database is SQLite. It is created automatically on first start, so a separate MySQL database is not required for VaultBack itself. VaultBack uses the native `mysql2` driver for connection tests and database discovery, so those GUI actions do not launch a Windows client process. Bundled database clients are used for logical dumps and restores.
+- Schedule MySQL/MariaDB backups using cron expressions and time zones.
+- Back up all visible databases, selected databases, one SQL file per database, or one SQL file per table.
+- Compress archives with GZIP or ZIP and optionally encrypt backup files with AES-256-GCM.
+- Store backups on local disk, FTP/FTPS, WebDAV/Synology, Google Drive, or OneDrive.
+- Keep each schedule isolated in its own storage folder and apply retention rotation per schedule.
+- Download, verify, restore over an existing database, or restore as a new database name.
+- Monitor running jobs, process stages, recent logs, sessions, API rate-limit usage, and storage capacity.
+- Manage administrator, operator, and viewer roles with protected administrator controls.
+
+### Security model
+
+- Database and storage credentials are encrypted before being written to SQLite.
+- The encryption key is kept separately in `data/.encryption-key` unless `APP_ENCRYPTION_KEY` is configured.
+- Production mode enables API rate limiting, safer 500 responses, exact host validation, and HTTPS configuration.
+- Database client commands run from the application-managed `tools/` directory rather than the operating system `PATH`.
+- Local backup artifacts, runtime data, `.env`, and executable client packs are excluded from Git.
+
+### Documentation map
+
+- [Main deployment and operations documentation](#deployment-requirements)
+- [aaPanel and PM2 deployment guide](docs/AA_PANEL.md)
+- [Portable database-tools guide](tools/README.md)
+- [Terms of use and third-party component notice](docs/TERMS_OF_USE.md)
+
+## Architecture and persistent data
+
+VaultBack runs as one Node.js process:
+
+| Component | Location | Responsibility |
+|---|---|---|
+| Browser GUI | `public/` | Vanilla JavaScript interface, routing, forms, live process views, and theme preferences. |
+| API and scheduler | `src/` → `dist/` | NestJS/Fastify API, authentication, scheduling, backup execution, storage adapters, and migrations. |
+| Control-plane database | `data/vaultback.sqlite` | Users, schedules, encrypted settings, sessions, audit records, and backup history. |
+| Encryption key | `data/.encryption-key` | Automatically generated key when `APP_ENCRYPTION_KEY` is not set. |
+| Local artifacts | `data/backups/` | Default local backup destination; files are ignored by Git. |
+| Portable clients | `tools/` | MySQL/MariaDB command-line clients used for dumps and restores. |
+
+The SQLite database is created and migrated automatically on startup. A separate MySQL or MariaDB server is not required for VaultBack. Connection tests and database discovery use the native `mysql2` driver; bundled command-line clients are used for logical dumps and restores.
+
+## Quick start
+
+For a local development or evaluation install:
+
+~~~powershell
+npm ci
+Copy-Item .env.example .env
+npm run build
+npm start
+~~~
+
+Open [the local VaultBack application](http://127.0.0.1:3010). On first login, create the administrator, use **Settings → Database tools** to install the supported portable client pack, then follow the first-time setup flow.
+
+For production, set a stable `APP_ENCRYPTION_KEY`, configure `APP_DOMAIN`, use HTTPS or an HTTPS reverse proxy, and run VaultBack under PM2, systemd, Docker, or another supervisor.
 
 ## Reset to first-install state
 
@@ -46,7 +103,7 @@ npm run reset-admin
 
 The command prompts for a new username and password, then asks you to type `RESET ADMIN`. It changes only the oldest administrator account, logs out all existing sessions, and preserves database connections, schedules, storage targets, and backup history. For controlled non-interactive use, `RESET_ADMIN_USERNAME` and `RESET_ADMIN_PASSWORD` may be supplied as environment variables together with `-- --force`; avoid storing the password in shell history or permanent environment configuration.
 
-## Included operational features
+## Feature details
 
 - Scheduled MySQL/MariaDB backups with all-database or live database checklist selection.
 - GZIP or ZIP compression, per-database and per-table ZIP layouts, optional AES-256-GCM backup-file encryption, retention rotation, checksums, and archive/content verification.
@@ -94,9 +151,9 @@ tools/
 
 Use the matching `<platform>-<arch>` directory for other systems, such as `linux-x64`.
 
-The repository does not include third-party binaries. Obtain and redistribute MySQL or MariaDB clients only under their applicable license terms. The repository includes the folder layout and placeholders; copy the matching standalone binaries into the folders before deployment. See [tools/README.md](tools/README.md) and [docs/TERMS_OF_USE.md](docs/TERMS_OF_USE.md).
+The repository does not include third-party binaries. Obtain and redistribute MySQL or MariaDB clients only under their applicable license terms. The repository includes the folder layout and placeholders; copy the matching standalone binaries into the folders before deployment. See [the portable database-tools guide](tools/README.md) and [the third-party component terms](docs/TERMS_OF_USE.md).
 
-### Option C: Docker deployment
+### Docker deployment option
 
 The included Dockerfile provides the Node runtime and certificates. On first setup, use the guided installer to download the verified client pack into the container’s `/app/tools/` directory; no host database client is used.
 
@@ -120,7 +177,6 @@ Important settings:
 | `HTTPS_PORT` | `3443` | HTTPS application port used only by `APP_PROTOCOL=both`. |
 | `HTTPS_CERT_FILE` | unset | PEM certificate/full-chain path required for `https` or `both`. |
 | `HTTPS_KEY_FILE` | unset | PEM private-key path required for `https` or `both`. |
-
 | `DATA_DIR` | `./data` | Directory containing SQLite, the encryption key, temporary files, and default local backups. |
 | `APP_ENCRYPTION_KEY` | generated automatically | Stable secret used to encrypt stored credentials. Set this explicitly in production. |
 | `DB_CLIENT_BINARY`, `DB_DUMP_BINARY`, and engine-specific binary variables | ignored | Retained only for compatibility with older `.env` files; VaultBack uses the application-managed `tools/` directory instead. |
@@ -214,7 +270,7 @@ Get-Command mysql
 Get-Command mysqldump
 ~~~
 
-If they are not found, use absolute paths in `.env`, or copy licensed client binaries into `tools/`.
+If they are not found, use **Settings → Database tools** to install the supported portable pack, or copy a licensed matching client pack into the application-managed `tools/` layout. Binary-path variables from older configurations are ignored.
 
 ### 2. Install application dependencies
 
@@ -242,7 +298,7 @@ $env:NODE_ENV='production'
 npm start
 ~~~
 
-Open [http://127.0.0.1:3010](http://127.0.0.1:3010).
+Open [the local VaultBack URL](http://127.0.0.1:3010).
 
 The process must remain running for schedules to execute. For a permanent Windows deployment, run the process through a service manager such as NSSM or Windows Task Scheduler. Configure the working directory as the project directory and run `node dist/main.js` with the same environment variables as `.env`.
 
@@ -353,7 +409,7 @@ Do not publish the container directly to the public internet. Use an HTTPS rever
 
 1. Open the application URL.
 2. Create the first administrator with a password of at least 12 characters.
-3. If the dependency banner reports missing tools, choose **Set up database tools**. On supported Windows x64 and Linux x64 hosts, the guided installer downloads the official MariaDB Community client archive, verifies its published SHA-256 checksum, extracts the client and dump tools into the ignored `tools/` directory, and rechecks readiness. These tools are used for dumps and restores; connection tests and database discovery use the native Node driver. No database server is installed and no saved credential is included in the download request. Unsupported hosts should follow [`tools/README.md`](tools/README.md) and place licensed binaries inside the application `tools/` directory; operating-system tools are not used.
+3. If the dependency banner reports missing tools, choose **Set up database tools**. On supported Windows x64 and Linux x64 hosts, the guided installer downloads the official MariaDB Community client archive, verifies its published SHA-256 checksum, extracts the client and dump tools into the ignored `tools/` directory, and rechecks readiness. These tools are used for dumps and restores; connection tests and database discovery use the native Node driver. No database server is installed and no saved credential is included in the download request. Unsupported hosts should follow [the portable database-tools guide](tools/README.md) and place licensed binaries inside the application `tools/` directory; operating-system tools are not used.
 4. Open **Settings → Database tools** to review the live status of both client pairs. If a portable tool becomes incomplete or stops responding, an administrator can confirm **Repair and redownload tools**. Repair affects only `tools/mariadb/<platform>-<arch>/`; it does not touch native binaries or `.env` paths.
 5. Open **Databases** and add the MySQL/MariaDB connection credentials.
 6. Use **Test connection**. A connection is not saved until the test succeeds.
@@ -442,7 +498,7 @@ Current VaultBack commands use `--no-defaults` and should not read incompatible 
 
 ### `caching_sha2_password could not be loaded`
 
-The bundled client must load its authentication plugins from the application directory. Current releases pass the portable `lib/plugin` directory explicitly to the client and dump commands. Pull the latest code, run `npm run deploy:pm2`, and use **Settings â†’ Database tools â†’ Repair and redownload tools** if the portable package is incomplete. Do not copy a system client over the managed tools.
+The bundled client must load its authentication plugins from the application directory. Current releases pass the portable `lib/plugin` directory explicitly to the client and dump commands. Pull the latest code, run `npm run deploy:pm2`, and use **Settings → Database tools → Repair and redownload tools** if the portable package is incomplete. Do not copy a system client over the managed tools.
 
 ### Connection test fails
 
@@ -455,7 +511,7 @@ The bundled client must load its authentication plugins from the application dir
 
 ### A schedule cannot be saved
 
-Every schedule requires a name, database connection, storage target, cron expression, andâ€”when using selected modeâ€”at least one selected database.
+Every schedule requires a name, database connection, storage target, cron expression, and—when using selected mode—at least one selected database.
 
 ### Local backup permission errors
 
