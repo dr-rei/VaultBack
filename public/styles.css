@@ -18,7 +18,7 @@ button{line-height:1.2;vertical-align:middle}.primary,.secondary,.small-button,.
 /* VaultBack visual refresh */
 :root {
   --refresh-ink: #122b3b;
-  --refresh-muted: #6c7f84;
+  --refresh-muted: #5b6f7c;
   --refresh-line: #dce9e6;
   --refresh-paper: #f4f8f7;
   --refresh-panel: rgba(255, 255, 255, 0.94);
@@ -2078,7 +2078,7 @@ body .encryption-banner{margin-bottom:18px}body .encryption-warning{background:#
 /* Unified product UI: shared enterprise visual language across every module. */
 :root {
   --ui-ink: #172b3a;
-  --ui-muted: #6d7f8b;
+  --ui-muted: #5b6f7c;
   --ui-subtle: #8c9aa3;
   --ui-line: #dce5eb;
   --ui-line-soft: #e9eef2;
@@ -5263,8 +5263,146 @@ body .app-footer-name {
   font-weight: 700;
 }
 
+/* Final accessibility and spacing contract for shared surfaces. */
+body .kicker {
+  color: #0d766f;
+}
+
+body .eyebrow {
+  color: #0d766f;
+}
+
+body .text-button,
+body .check-icon {
+  color: #0d766f;
+}
+
+body .primary {
+  background: #0d766f;
+}
+
+body .primary:hover {
+  background: #095f5a;
+}
+
+body .pagination {
+  color: var(--ui-muted);
+}
+
+body th {
+  color: #566d79;
+}
+
+body .small-button:disabled {
+  color: #5b6f7c;
+}
+
+body .guide-muted,
+body .guide-steps span {
+  color: #5b6f7c !important;
+}
+
+body .capacity-row small,
+body .user-row small,
+body .job-run-row small {
+  color: #5b6f7c;
+}
+
+body .status.success {
+  color: #2f705c;
+}
+
+body .status.running {
+  color: #4d6971;
+}
+
+body .process-indicator-count {
+  background: #0d766f;
+}
+
+body .process-indicator.has-active .process-indicator-count {
+  background: #d9ad62;
+  color: #24313a;
+}
+
+body #view-settings > .environment-panel + .settings-grid,
+body #view-settings > .settings-grid + .panel,
+body #view-settings > .panel + .panel {
+  margin-top: var(--surface-gap);
+}
+
 html[data-theme="dark"] body .app-footer-name {
   color: #dceceb;
+}
+
+html[data-theme="dark"] body .kicker {
+  color: #52c5b8;
+}
+
+html[data-theme="dark"] body .text-button,
+html[data-theme="dark"] body .check-icon,
+html[data-theme="dark"] body .capacity-value {
+  color: #52c5b8;
+}
+
+html[data-theme="dark"] body .check-icon {
+  border-color: #2c6867;
+  background: #173e40;
+}
+
+html[data-theme="dark"] body .check-row.is-attention .check-icon {
+  border-color: #6e3c40;
+  background: #4a292d;
+  color: #f0a3a0;
+}
+
+html[data-theme="dark"] body .capacity-value.warning {
+  color: #f0c276;
+}
+
+html[data-theme="dark"] body .capacity-row small,
+html[data-theme="dark"] body .user-row small,
+html[data-theme="dark"] body .job-run-row small {
+  color: #a9bfc2;
+}
+
+html[data-theme="dark"] body .overview-latest-status.is-failed {
+  color: #f0a3a0;
+}
+
+html[data-theme="dark"] body .update-history-head b,
+html[data-theme="dark"] body .update-history-item b {
+  color: #f1f7f8;
+}
+
+html[data-theme="dark"] body .update-history-head span:not(.tag),
+html[data-theme="dark"] body .update-history-item small {
+  color: #a9bfc2;
+}
+
+html[data-theme="dark"] body .update-history-item {
+  border-color: var(--ui-line);
+  background: var(--ui-surface-muted);
+}
+
+/* Keep the mobile top bar inside the viewport when the title and action
+   controls cannot fit on one row. */
+@media (max-width: 767px) {
+  body .topbar {
+    flex-wrap: wrap;
+    row-gap: 12px;
+  }
+
+  body .topbar > div:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  body .top-actions {
+    flex: 0 0 auto;
+    max-width: 100%;
+    margin-left: auto;
+  }
 }
 
 @media (max-width: 560px) {
@@ -5521,4 +5659,42 @@ html[data-theme="dark"] body .job-runs .pagination {
 
 html[data-theme="dark"] body .job-runs .pagination b {
   color: #e0edef;
+}
+
+/* Final light-theme text contrast corrections. These selectors intentionally
+   stay scoped to light mode so the darker surface palette keeps its own
+   readable muted-text values. */
+html:not([data-theme="dark"]) body .topbar .eyebrow,
+html:not([data-theme="dark"]) body .section-intro .eyebrow {
+  color: #0d766f;
+}
+
+html:not([data-theme="dark"]) body .metric:not(.accent) .metric-label,
+html:not([data-theme="dark"]) body .metric:not(.accent) small,
+html:not([data-theme="dark"]) body .card p,
+html:not([data-theme="dark"]) body .card-meta,
+html:not([data-theme="dark"]) body .activity small,
+html:not([data-theme="dark"]) body .activity time,
+html:not([data-theme="dark"]) body .check-row p,
+html:not([data-theme="dark"]) body .hint,
+html:not([data-theme="dark"]) body .checksum {
+  color: #5b6f7c;
+}
+
+html:not([data-theme="dark"]) body .overview-latest-status.is-failed,
+html:not([data-theme="dark"]) body .overview-error {
+  color: #a94444;
+}
+
+/* Give tablet-sized desktop layouts enough width for metric labels and
+   supporting copy instead of forcing four narrow cards to wrap awkwardly. */
+@media (min-width: 768px) and (max-width: 1100px) {
+  body .metric-grid,
+  body .update-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  body .overview-operations-grid {
+    grid-template-columns: 1fr;
+  }
 }

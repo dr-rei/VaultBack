@@ -396,9 +396,37 @@ export class BackupService {
   private containsDatabaseObjectSql(file: string) {
     try { return /\b(?:VIEW|PROCEDURE|FUNCTION|EVENT)\b/i.test(fs.readFileSync(file, 'utf8')); } catch { return false; }
   }
-  private dumpDatabaseObjects(connection: DatabaseConnection, database: string, available: { tables: string[]; views: string[] }, objects: BackupObjectOptions, output: string, processId?: string) {
-    const ignored = [...available.tables, ...(objects.views ? [] : available.views)].map(name => `--ignore-table=${database}.${name}`);
-    return this.dumpWithArgs(connection, output, ['--no-data', ...ignored, database], processId, { includeRoutines: objects.routines, includeEvents: objects.events, includeTriggers: false });
+  private async appendViewDefinitions(connection: DatabaseConnection, database: string, views: string[], output: string, processId?: string) {
+    if (!views.length) return 0;
+    const definitions: string[] = [];
+    await this.withNativeDatabaseConnection(connection, async client => {
+      for (const view of views) {
+        try {
+          const qualified = `${this.quoteIdentifier(database)}.${this.quoteIdentifier(view)}`;
+          const [rows] = await client.query(`SHOW CREATE VIEW ${qualified}`);
+          const row = (rows as any[])[0] || {};
+          const createSql = String(row['Create View'] || row['Create Table'] || Object.values(row).find(value => typeof value === 'string' && /\bCREATE\b/i.test(value)) || '').trim();
+          if (!createSql) throw new Error('The server returned no CREATE VIEW definition');
+          definitions.push(`/*!50001 DROP VIEW IF EXISTS ${qualified} */;\n/*!50001 ${createSql} */;\n`);
+        } catch (error: any) {
+          const detail = String(error?.message || error).replace(/\s+/g, ' ').slice(0, 240);
+          if (processId) this.addProcessLog(processId, `Skipping view ${database}.${view}: ${detail}`);
+        }
+      }
+    });
+    if (definitions.length) fs.appendFileSync(output, `\n-- VaultBack view definitions\n${definitions.join('\n')}`, { encoding: 'utf8' });
+    return definitions.length;
+  }
+  private async dumpDatabaseObjects(connection: DatabaseConnection, database: string, available: { tables: string[]; views: string[] }, objects: BackupObjectOptions, output: string, processId?: string) {
+    // Do not pass views to mariadb-dump. Its view serializer can fail with a
+    // misleading "ds_view" error on valid MariaDB/MySQL views. Tables,
+    // routines, and events remain handled by the native dump utility.
+    const ignored = [...available.tables, ...available.views].map(name => `--ignore-table=${database}.${name}`);
+    await this.dumpWithArgs(connection, output, ['--no-data', ...ignored, database], processId, { includeRoutines: objects.routines, includeEvents: objects.events, includeTriggers: false });
+    if (objects.views) {
+      const count = await this.appendViewDefinitions(connection, database, available.views, output, processId);
+      if (processId && count) this.addProcessLog(processId, `Included ${count} view definition(s) for ${database}`);
+    }
   }
   private clientStartMessage(binary: string, error: any) {
     if (error?.code === 'EPERM') return `Windows blocked VaultBack from launching ${path.basename(binary)}. Confirm the bundled tool is executable and run VaultBack under a Windows/PM2 account allowed to start child processes.`;
