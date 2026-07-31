@@ -823,6 +823,28 @@ html[data-theme="dark"] body .auth-note {
   color: #9bb0b8;
 }
 
+body .auth-feedback {
+  display: none;
+  margin-top: 16px;
+  padding: 11px 13px;
+  border: 1px solid #e4b8b2;
+  border-radius: 10px;
+  background: #fff1ef;
+  color: #9d3f3b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+body .auth-feedback.show {
+  display: block;
+}
+
+html[data-theme="dark"] body .auth-feedback {
+  border-color: #8b464b;
+  background: #4a292d;
+  color: #ffd4d0;
+}
+
 html[data-theme="dark"] body .form-panel:not(.hidden),
 html[data-theme="dark"] body .user-form:not(.hidden) {
   box-shadow: 0 24px 70px rgba(0, 0, 0, .38);
