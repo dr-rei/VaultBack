@@ -112,10 +112,13 @@ The command prompts for a new username and password, then asks you to type `RESE
 - Local, FTP/FTPS, WebDAV/Synology, Google Drive, and OneDrive destinations. Each new schedule stores its backups in a dedicated `schedule-<schedule-id>` folder within the selected target, so separate schedules never mix their files. Existing backups created before this behavior remain supported from the target root.
 - Google and Microsoft OAuth refresh-token support for unattended cloud schedules.
 - Backup success/failure/capacity notifications through Discord, Telegram, or HTTPS webhooks.
-- Storage capacity monitoring, server-side search and pagination for databases, storage targets, schedules, backup history, and users, plus per-schedule stored-backup lists, retry actions, and safe configuration export. List queries return only the requested page, with a 25-item default and 50/100-item choices, so large installations remain responsive.
+- Storage capacity monitoring, scheduled storage health checks, stale-backup alerts, retry and overlap policies, server-side search and pagination for databases, storage targets, schedules, backup history, and users, plus per-schedule stored-backup lists, verification reports, retry actions, and safe configuration export. List queries return only the requested page, with a 25-item default and 50/100-item choices, so large installations remain responsive.
+- Restore verification checks that destination databases exist and reports the restored table count. Administrators can review the paginated audit log and storage health status from Settings.
+- Automatic retry attempts can be configured per schedule (0–10 attempts, delay 30 seconds–24 hours). Overlapping scheduled runs default to skip; choosing queue runs one pending overlap after the active run finishes.
+- The encrypted disaster-recovery export includes the control-plane database, encryption key, application version, runtime metadata, and recovery instructions. Backup files remain separate and must be copied from their storage target.
 - Administrator, operator, and viewer roles, plus a guided first-time setup flow. Administrators can review active sessions and per-IP API rate-limit usage, which refreshes every two seconds while the page is open. The first administrator can revoke all sessions; other administrators can revoke operator/viewer sessions only. `MAX_LOGIN_SESSIONS_PER_USER` can also limit concurrent logins per account.
 
-Archive verification decrypts/decompresses the artifact and checks for recognizable SQL dump content. It does not restore into a live database automatically; perform a periodic restore test in an isolated database as part of disaster-recovery operations.
+Archive verification decrypts/decompresses the artifact and checks for recognizable SQL dump content. Restore verification runs after an administrator confirms a restore and checks destination connectivity, database existence, and table counts. `BACKUP_STALE_AFTER_HOURS` controls the default stale-backup alert threshold (26 hours).
 
 ## Deployment requirements
 
@@ -228,7 +231,13 @@ For direct HTTPS, set `APP_PROTOCOL=https`, `PORT` to the HTTPS port, and provid
 
 Rate limiting is disabled when `NODE_ENV` is anything other than `production`. In production, static frontend files are not rate-limited, normal API requests use `RATE_LIMIT_PER_MINUTE`, and login/setup requests use the stricter authentication bucket. The administrator-only Sessions & security page displays the current per-IP usage, remaining quota, reset time, and active sessions. Production 500-level responses always return `Internal server error`; the full error is logged by the server. Restart VaultBack after changing these values.
 
+Live operational data uses the authenticated server-sent event stream at `/api/events`, not a repeating browser API poll. The stream is excluded from the normal API bucket after session authentication, is limited to five connections per user and twenty per source IP, sends heartbeats, and automatically closes when the session is revoked. Operators and viewers receive only process, backup-run, and storage-health topics; administrator-only sessions, per-IP rate-limit usage, and update topics are filtered at the server. If aaPanel/Nginx is used, disable proxy buffering for the VaultBack location so events are delivered immediately.
+
 ### Versioned releases and in-app updates
+
+The server checks for new releases every 15 minutes and broadcasts update status to authenticated administrator browsers over the event stream. The browser no longer polls the update endpoint on a timer.
+
+This server-side check supersedes the legacy browser-tab polling wording in older deployment notes below.
 
 Release builds are published as versioned archives rather than Git working trees. The administrator can open **Settings → Software updates** to check the HTTPS release manifest, review the changelog for every release newer than the installed version, and install the latest verified package. After login, VaultBack checks for updates automatically and repeats the check every 15 minutes while the browser tab is visible. When a newer release is found, an update indicator appears in the global top bar and links directly to the Software updates section. The updater verifies the manifest artifact URL and SHA-256 checksum, preserves `data/`, `.env`, and `tools/`, runs `npm ci --omit=dev`, restarts the configured PM2 process, and checks the health endpoint. A failed install is rolled back to the previous application files. Configure `UPDATE_PM2_APP=vaultback` for aaPanel/PM2; the updater also falls back to `vaultback` when this variable is omitted. A plain `npm start` process cannot relaunch itself after the graceful shutdown. See [docs/RELEASES.md](docs/RELEASES.md) for the release server, manifest format, release-history field, GitHub Actions workflow, and migration precautions.
 
@@ -505,8 +514,10 @@ The SQLite file is migrated automatically when new schema columns are introduced
 
 ## Storage deployment notes
 
+Live operational data uses the authenticated server-sent event stream at `/api/events`, not a repeating browser API poll. The stream is excluded from the normal API bucket after session authentication, is limited to five connections per user and twenty per source IP, sends heartbeats, and automatically closes when the session is revoked. Operators and viewers receive only process, backup-run, and storage-health topics; administrator-only sessions, per-IP rate-limit usage, and update topics are filtered at the server. If aaPanel/Nginx is used, disable proxy buffering for the VaultBack location so events are delivered immediately.
+
 - **Local disk**: use the default `./data/backups` or a path allowed by the application. Local backup files are Git-ignored.
-- **Live process monitor**: use the process indicator in the top bar on any registered page. Hover it for a compact summary, or click it to open the full live-process modal with stages, duration, and recent sanitized logs. The monitor refreshes every two seconds and keeps completed or failed process summaries in memory for 15 minutes.
+- **Live process monitor**: use the process indicator in the top bar on any registered page. Hover it for a compact summary, or click it to open the full live-process modal with stages, duration, and recent sanitized logs. The monitor receives server-sent updates over one authenticated stream and keeps completed or failed process summaries in memory for 15 minutes.
 - **FTP/FTPS**: use a dedicated account and FTPS where supported.
 - **WebDAV/Synology**: use the Synology WebDAV endpoint (commonly HTTPS port `5006`) and a dedicated account restricted to the backup directory. Prefer the NAS certificate hostname instead of an IP address. VaultBack verifies HTTPS certificates by default; only enable **Allow self-signed certificate** for that target when the NAS is on a trusted private network and its CA cannot be installed on the VaultBack host.
 - **Google Drive/OneDrive**: use a narrowly scoped access token and protect `.env` and the SQLite encryption key.

@@ -37,4 +37,5 @@ export class BackupController {
   }
   @Post('runs/:id/restore') restore(@Req() req: FastifyRequest, @Param('id') id: string, @Body() body: any) { this.auth.requireAdmin(req); return this.backups.restoreRun(id, body); }
   @Post('runs/:id/retry') retry(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireSession(req, true); return this.backups.retryRun(id); }
+  @Get('runs/:id/verification') verification(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireSession(req); return this.backups.verificationReport(id); }
 }

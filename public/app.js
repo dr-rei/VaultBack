@@ -1,8 +1,8 @@
-const state = { csrf: '', userId: '', isPrimary: false, version: '', connections: [], storage: [], jobs: [], runs: [], processes: [], sessions: [], sessionInfo: null, currentView: 'dashboard', dependencies: null, toolDiagnostics: null, toolDiagnosticsLoadedAt: 0, encryption: null, role: 'viewer', capacity: [], setupStatus: null, notifications: null, update: null, users: [], list: { connections: { page: 1, pageSize: 25, search: '' }, storage: { page: 1, pageSize: 25, search: '' }, jobs: { page: 1, pageSize: 25, search: '' }, runs: { page: 1, pageSize: 25, search: '', status: '' }, users: { page: 1, pageSize: 25, search: '' }, sessions: { page: 1, pageSize: 25 } }, meta: {} };
+const state = { csrf: '', userId: '', isPrimary: false, version: '', connections: [], storage: [], storageHealth: [], jobs: [], runs: [], processes: [], sessions: [], sessionInfo: null, audit: { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }, currentView: 'dashboard', dependencies: null, toolDiagnostics: null, toolDiagnosticsLoadedAt: 0, encryption: null, role: 'viewer', capacity: [], setupStatus: null, notifications: null, update: null, users: [], list: { connections: { page: 1, pageSize: 25, search: '' }, storage: { page: 1, pageSize: 25, search: '' }, jobs: { page: 1, pageSize: 25, search: '' }, runs: { page: 1, pageSize: 25, search: '', status: '' }, users: { page: 1, pageSize: 25, search: '' }, sessions: { page: 1, pageSize: 25 } }, meta: {} };
 let liveProcessTimer = null;
 var updateCheckTimer = null;
 var updateCheckInFlight = false;
-const updateCheckIntervalMs = 15 * 60 * 1000;
+let realtimeSource = null;
 var vaultbackCollectionEndpoints = { connections: '/api/connections', storage: '/api/storage', jobs: '/api/jobs', runs: '/api/runs', users: '/api/auth/users' };
 var vaultbackSearchTimers = {};
 var vaultbackJobRunPages = {};
@@ -154,8 +154,68 @@ async function deleteConnection(id){if(!await confirmAction('Delete this databas
 async function deleteStorage(id){if(!await confirmAction('Delete this storage target and all schedules that use it?','Delete storage target'))return;const button=document.querySelector(`button[onclick="deleteStorage('${id}')"]`);try{await withButtonBusy(button,async()=>{await api(`/api/storage/${id}`,{method:'DELETE'});await loadAll();toast('Storage target deleted')},'Deleting…')}catch(e){toast(e.message,true)}}
 async function deleteJob(id){if(!await confirmAction('Delete this schedule and its backup run history?','Delete schedule'))return;const button=document.querySelector(`button[onclick="deleteJob('${id}')"]`);try{await withButtonBusy(button,async()=>{await api(`/api/jobs/${id}`,{method:'DELETE'});await loadAll();toast('Schedule deleted')},'Deleting…')}catch(e){toast(e.message,true)}}
 async function testStorage(buttonOrId,id){const targetId=id||buttonOrId;const button=id?buttonOrId:document.querySelector(`button[onclick="testStorage('${targetId}')"]`);try{await withButtonBusy(button,async()=>{const r=await api(`/api/storage/${targetId}/test`,{method:'POST'});toast(r.message)},'Testing storage…')}catch(e){toast(e.message,true)}}
+async function checkStorageHealth(buttonOrId,id){const targetId=id||buttonOrId;const button=id?buttonOrId:document.querySelector(`button[onclick="checkStorageHealth('${targetId}')"]`);try{await withButtonBusy(button,async()=>{const result=await api(`/api/storage/${targetId}/health`,{method:'POST'});state.storageHealth=await api('/api/storage/health');renderStorage();toast(result.message)},'Checking health…')}catch(e){toast(e.message,true)}}
 // Bodyless POST endpoints must not receive an empty JSON body declaration.
 async function api(url, options={}){const headers={...(options.headers||{})};if(options.body!==undefined)headers['Content-Type']='application/json';const opts={...options,headers};if(opts.method&&opts.method!=='GET'&&state.csrf&&!/\/api\/auth\/(?:login|setup)$/.test(url))opts.headers['x-csrf-token']=state.csrf;const r=await fetch(url,opts);let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(data.message||'Request failed');return data}
+
+function closeRealtime() {
+  if (!realtimeSource) return;
+  realtimeSource.close();
+  realtimeSource = null;
+}
+
+function realtimeJson(event) {
+  try { return JSON.parse(event.data || '{}'); } catch { return null; }
+}
+
+function connectRealtime() {
+  if (!state.csrf || !window.EventSource) return;
+  closeRealtime();
+  const topics = 'processes,backup_runs,sessions,rate_limit,updates,storage_health';
+  const source = new EventSource(`/api/events?topics=${encodeURIComponent(topics)}`, { withCredentials: true });
+  realtimeSource = source;
+  source.addEventListener('processes', event => {
+    const payload = realtimeJson(event);
+    if (!payload || !Array.isArray(payload.items)) return;
+    state.processes = payload.items;
+    renderProcesses();
+    renderProcessIndicator();
+    const active = state.processes.filter(item => item.status === 'running').length;
+    const status = active ? `${active} active · live updates` : 'Live updates';
+    if ($('#process-live-status')) $('#process-live-status').innerHTML = `<span class="live-dot"></span> ${status}`;
+    if ($('#process-modal-status')) $('#process-modal-status').innerHTML = `<span class="live-dot"></span>${status}`;
+  });
+  source.addEventListener('sessions', () => {
+    if (state.currentView === 'sessions' && state.role === 'admin') void loadSessions();
+  });
+  source.addEventListener('rate_limit', event => {
+    const payload = realtimeJson(event);
+    if (!payload || state.role !== 'admin') return;
+    state.apiUsage = payload;
+    if (state.currentView === 'sessions') renderSessionsWithUsage();
+  });
+  source.addEventListener('updates', event => {
+    const payload = realtimeJson(event);
+    if (!payload || state.role !== 'admin') return;
+    state.update = payload;
+    renderUpdatePanel();
+    renderUpdateIndicator();
+  });
+  source.addEventListener('storage_health', event => {
+    const payload = realtimeJson(event);
+    if (!Array.isArray(payload)) return;
+    state.storageHealth = payload;
+    if (state.currentView === 'storage') renderStorage();
+  });
+  source.addEventListener('backup_runs', () => {
+    if (!['dashboard', 'jobs', 'runs'].includes(state.currentView)) return;
+    void loadCollection('runs').then(() => { renderRuns(); renderDashboard(); });
+  });
+  source.onerror = () => {
+    // EventSource performs its own bounded reconnect loop. Do not show a toast
+    // for transient proxy/network interruptions or create fallback polling.
+  };
+}
 
 async function downloadRunArtifact(button, id) {
   if (!button || button.disabled) return;
@@ -208,6 +268,7 @@ function showConnectionForm(item={}){const el=$('#connection-form');el.classList
 
 
 function showAuth(setup){
+  closeRealtime();
   $('#auth-loading')?.classList.add('hidden');
   $('#app-shell')?.classList.add('hidden');
   $('#auth-screen').classList.remove('hidden');
@@ -311,6 +372,9 @@ function showJobForm(item = {}) {
     selectField('Compression', 'compression', [['gzip', 'GZIP (.sql.gz)'], ['zip', 'ZIP archive (.zip)'], ['none', 'None (.sql)']], item.compression || 'gzip') +
     selectField('Backup encryption', 'backupEncryption', [['none', 'None'], ['aes-256-gcm', 'AES-256-GCM (recommended)']], item.backupEncryption || 'none') +
     field('Retention count', 'retentionCount', item.retentionCount || 7, 'number', 'min="1" max="365"') +
+    field('Automatic retries', 'retryCount', item.retryCount ?? 0, 'number', 'min="0" max="10"') +
+    field('Retry delay (seconds)', 'retryDelaySeconds', item.retryDelaySeconds || 300, 'number', 'min="30" max="86400"') +
+    selectField('Overlapping run', 'overlapPolicy', [['skip', 'Skip while already running'], ['queue', 'Queue next run']], item.overlapPolicy || 'skip') +
     field('Filename prefix', 'filenamePrefix', item.filenamePrefix || 'database-backup') +
     selectField('Status', 'enabled', [['true', 'Active'], ['false', 'Paused']], item.enabled === false ? 'false' : 'true') +
     '<div class="field full"><span class="hint">Choose all databases or select specific databases from the list returned by the connection.</span></div>'
@@ -448,7 +512,7 @@ document.addEventListener('click', event => {
 
 function formatCapacity(value) { if (value === null || value === undefined) return 'Unavailable'; if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`; if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`; return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`; }
 function updateNotificationFields() { const telegram = $('#notification-provider').value === 'telegram'; $('#notification-webhook-fields').classList.toggle('hidden', telegram); $('#notification-telegram-fields').classList.toggle('hidden', !telegram); }
-async function saveNotifications() { const button = $('#save-notifications'); try { await withButtonBusy(button, async () => { await api('/api/settings/notifications', { method: 'POST', body: JSON.stringify({ enabled: $('#notification-enabled').checked, provider: $('#notification-provider').value, webhookUrl: $('#notification-webhook-url').value, webhookToken: $('#notification-webhook-token').value, botToken: $('#notification-bot-token').value, chatId: $('#notification-chat-id').value, events: { backup_success: $('#notify-success').checked, backup_failed: $('#notify-failed').checked, capacity_warning: $('#notify-capacity').checked } }) }); toast('Notification settings saved'); state.notifications = await api('/api/settings/notifications'); renderSettings(); }, 'Saving settings…'); } catch (e) { toast(e.message, true); } }
+async function saveNotifications() { const button = $('#save-notifications'); try { await withButtonBusy(button, async () => { await api('/api/settings/notifications', { method: 'POST', body: JSON.stringify({ enabled: $('#notification-enabled').checked, provider: $('#notification-provider').value, webhookUrl: $('#notification-webhook-url').value, webhookToken: $('#notification-webhook-token').value, botToken: $('#notification-bot-token').value, chatId: $('#notification-chat-id').value, events: { backup_success: $('#notify-success').checked, backup_failed: $('#notify-failed').checked, backup_retry: $('#notify-retry')?.checked, backup_stale: $('#notify-stale')?.checked, storage_failed: $('#notify-storage')?.checked, capacity_warning: $('#notify-capacity').checked } }) }); toast('Notification settings saved'); state.notifications = await api('/api/settings/notifications'); renderSettings(); }, 'Saving settings…'); } catch (e) { toast(e.message, true); } }
 async function deleteUser(id) { if (!await confirmAction('Remove this user account? Existing sessions for the account will stop working.','Delete user')) return; const button=document.querySelector(`button[onclick="deleteUser('${encodeURIComponent(id)}')"]`); try { await withButtonBusy(button, async()=>{ await api(`/api/auth/users/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadCollection('users'); toast('User deleted'); }, 'Deleting…'); } catch (e) { toast(e.message, true); } }
 async function exportSafeConfig() { try { const data = await api('/api/settings/export'); const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `vaultback-config-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(link.href); toast('Safe configuration exported'); } catch (e) { toast(e.message, true); } }
 
@@ -520,7 +584,7 @@ function renderCollectionPagination(key, targetId) {
 async function loadCollection(key) { const result = await api(`${vaultbackCollectionEndpoints[key]}${collectionQuery(key)}`); state[key] = result.items || []; state.meta[key] = result; if (key === 'connections') renderConnections(); if (key === 'storage') renderStorage(); if (key === 'jobs') renderJobs(); if (key === 'runs') renderRuns(); if (key === 'users') renderSettings(); renderCollectionPagination(key, `${key}-pagination`); if (key === 'users') renderCollectionPagination(key, 'users-pagination'); if (key === 'runs') renderDashboard(); }
 
 function renderConnections() { collectionControls('connections', 'connections-controls', 'Search name, host, user, or database'); const el = $('#connections-list'); const actions = state.role === 'admin' ? c => `<button class="small-button" onclick="editConnection('${c.id}')">Edit</button><button class="small-button danger" onclick="deleteConnection('${c.id}')">Delete</button>` : () => '<span class="hint">Administrator access is required to change credentials.</span>'; el.innerHTML = state.connections.map(c => `<article class="card"><div class="card-top"><div><h3>${esc(c.name)}</h3><p>${esc(c.username)}@${esc(c.host)}:${c.port}</p></div><span class="tag">${esc(c.engine)}</span></div><div class="card-meta"><span>Credentials</span><b>Encrypted</b></div><div class="card-actions">${actions(c)}</div></article>`).join('') || '<div class="empty">No database connections match this search.</div>'; renderCollectionPagination('connections', 'connections-pagination'); }
-function renderStorage() { collectionControls('storage', 'storage-controls', 'Search storage name or type'); const el = $('#storage-list'); const actions = state.role === 'admin' ? s => `<button class="small-button" onclick="testStorage('${s.id}')">Test</button><button class="small-button" onclick="editStorage('${s.id}')">Edit</button><button class="small-button danger" onclick="deleteStorage('${s.id}')">Delete</button>` : s => `<button class="small-button" onclick="testStorage('${s.id}')">Test</button><span class="hint">Administrator access is required to change credentials.</span>`; el.innerHTML = state.storage.map(s => `<article class="card"><div class="card-top"><div><h3>${esc(s.name)}</h3><p>${esc(storageDescription(s))}</p></div><span class="tag">${esc(s.type)}</span></div><div class="card-meta"><span>Credentials</span><b>Encrypted</b></div><div class="card-actions">${actions(s)}</div></article>`).join('') || '<div class="empty">No storage targets match this search.</div>'; renderCollectionPagination('storage', 'storage-pagination'); }
+function renderStorage() { collectionControls('storage', 'storage-controls', 'Search storage name or type'); const el = $('#storage-list'); const actions = state.role === 'admin' ? s => `<button class="small-button" onclick="checkStorageHealth('${s.id}')">Health check</button><button class="small-button" onclick="testStorage('${s.id}')">Test</button><button class="small-button" onclick="editStorage('${s.id}')">Edit</button><button class="small-button danger" onclick="deleteStorage('${s.id}')">Delete</button>` : s => `<button class="small-button" onclick="testStorage('${s.id}')">Test</button><span class="hint">Administrator access is required to change credentials.</span>`; el.innerHTML = state.storage.map(s => { const health = state.storageHealth.find(item => item.targetId === s.id); const healthLabel = health ? `${health.status === 'healthy' ? 'Healthy' : 'Unavailable'}${health.checkedAt ? ` · ${fmtDate(health.checkedAt)}` : ''}` : 'Not checked'; return `<article class="card"><div class="card-top"><div><h3>${esc(s.name)}</h3><p>${esc(storageDescription(s))}</p></div><span class="tag">${esc(s.type)}</span></div><div class="card-meta"><span>Credentials</span><b>Encrypted</b></div><div class="card-meta"><span>Health</span><b class="status ${health?.status === 'healthy' ? 'success' : health?.status === 'unavailable' ? 'failed' : ''}">${esc(healthLabel)}</b></div><div class="card-actions">${actions(s)}</div></article>`; }).join('') || '<div class="empty">No storage targets match this search.</div>'; renderCollectionPagination('storage', 'storage-pagination'); }
 function renderJobs() { collectionControls('jobs', 'jobs-controls', 'Search schedule, database, storage, or cron'); const el = $('#jobs-list'); const admin = state.role === 'admin'; el.innerHTML = state.jobs.map(j => { const db = state.connections.find(c => c.id === j.databaseConnectionId); const st = state.storage.find(s => s.id === j.storageTargetId); const configActions = admin ? `<button class="small-button" onclick="editJob('${j.id}')">Edit</button><button class="small-button danger" onclick="deleteJob('${j.id}')">Delete</button>` : ''; const layout = j.backupLayout === 'database' ? 'Per database' : j.backupLayout === 'table' ? 'Per table' : 'Single file'; const compression = j.compression === 'gzip' ? 'GZIP' : j.compression === 'zip' ? 'ZIP' : 'RAW'; return `<article class="card"><div class="card-top"><div><h3>${esc(j.name)}</h3><p>${esc(db?.name || 'Missing database')} → ${esc(st?.name || 'Missing target')}</p></div><span class="tag">${j.enabled ? 'ACTIVE' : 'PAUSED'}</span></div><div class="card-meta"><span>${esc(j.cronExpression)} · ${esc(j.timezone)}</span><b>${layout} · ${compression} · ${j.retentionCount} kept</b></div><div class="card-meta"><span>Protection</span><b>${j.backupEncryption === 'aes-256-gcm' ? 'AES-256-GCM' : 'Archive only'}</b></div><div class="card-meta"><span>Next run</span><b>${fmtDate(j.nextRunAt)}</b></div><div class="card-actions"><button class="small-button" onclick="runJob('${j.id}')">Run now</button><button class="small-button" id="job-runs-button-${j.id}" onclick="viewJobRuns('${j.id}')">View backups</button>${configActions}</div><div id="job-runs-${j.id}" class="job-runs hidden"></div></article>`; }).join('') || '<div class="empty">No schedules match this search.</div>'; renderCollectionPagination('jobs', 'jobs-pagination'); }
 
 function overviewDateLabel(value) {
@@ -597,6 +661,7 @@ function renderDashboard() {
 }
 async function runJob(buttonOrId, id) { const targetId=id||buttonOrId; const button=id?buttonOrId:document.querySelector(`button[onclick="runJob('${targetId}')"]`); try { await withButtonBusy(button, async()=>{ await api(`/api/jobs/${encodeURIComponent(targetId)}/run`, { method: 'POST' }); await loadCollection('runs'); toast('Backup completed; history updated'); }, 'Starting backup…'); } catch (e) { await loadCollection('runs').catch(() => {}); toast(e.message, true); } }
 async function retryRun(buttonOrId, id) { const targetId=id||buttonOrId; const button=id?buttonOrId:document.querySelector(`button[onclick="retryRun('${targetId}')"]`); try { await withButtonBusy(button, async()=>{ await api(`/api/runs/${encodeURIComponent(targetId)}/retry`, { method: 'POST' }); await loadCollection('runs'); toast('Backup retry started'); }, 'Retrying backup…'); } catch (e) { toast(e.message, true); } }
+async function showVerificationReport(id) { try { const reports = await api(`/api/runs/${encodeURIComponent(id)}/verification`); const latest = reports[0]; toast(latest ? `${latest.status}: ${latest.message}` : 'No verification report is available yet', latest?.status === 'failed'); } catch (e) { toast(e.message, true); } }
 
 function isMobileSidebarViewport() {
   return window.matchMedia('(max-width: 767px)').matches;
@@ -811,7 +876,7 @@ function bindMigrationControls() { if (document.body.dataset.migrationBound) ret
 async function restoreRunFromHistory(id) { return openRestoreModal(id); }
 function closeRestoreModal() { const modal = $('#restore-modal'); if (modal) modal.remove(); document.body.classList.remove('modal-open'); }
 function openRestoreModal(id) { const run = state.runs.find(item => item.id === id); if (!run) return toast('Backup run is no longer available', true); const canRename = run.databaseScope === 'selected' && Array.isArray(run.databases) && run.databases.length === 1; const root = $('#modal-root'); const connectionOptions = state.connections.map(connection => `<option value="${esc(connection.id)}" ${connection.id === run.databaseConnectionId ? 'selected' : ''}>${esc(connection.name)} · ${esc(connection.host)}:${esc(connection.port)}</option>`).join(''); root.insertAdjacentHTML('beforeend', `<section id="restore-modal" class="form-panel"><form class="form-shell" onsubmit="return false"><button type="button" class="modal-close" aria-label="Close restore dialog" onclick="closeRestoreModal()">×</button><h3>Restore backup</h3><p class="hint">Choose the destination server and whether the backup should replace its original database names or be restored under a new name.</p><div class="form-grid"><div class="field full"><label for="restore-connection">Destination database connection</label><select id="restore-connection">${connectionOptions}</select></div><div class="field full"><label for="restore-mode">Restore mode</label><select id="restore-mode"><option value="overwrite">Restore original database names (may overwrite data)</option><option value="new" ${canRename ? '' : 'disabled'}>Restore as a new database name${canRename ? '' : ' — only available for one-database backups'}</option></select></div><div id="restore-new-fields" class="field full hidden"><label for="restore-database-name">New database name</label><input id="restore-database-name" placeholder="example_restored" pattern="[A-Za-z0-9_]{1,64}" /><small class="hint">Letters, numbers, and underscores only.</small></div><div id="restore-warning" class="callout dependency-warning full"><b>Destructive action</b><br>This can overwrite the latest data in the destination database(s). Confirm that you have a recent backup and selected the correct destination.</div><label class="field full"><span><input id="restore-confirm" type="checkbox" /> I understand that existing destination data may be overwritten.</span></label></div><div class="form-actions"><button type="button" class="secondary" onclick="closeRestoreModal()">Cancel</button><button type="button" class="primary" id="restore-submit">Restore backup</button></div></form></section>`); document.body.classList.add('modal-open'); const mode = $('#restore-mode'); const fields = $('#restore-new-fields'); const warning = $('#restore-warning'); const update = () => { const renamed = mode.value === 'new'; fields.classList.toggle('hidden', !renamed); warning.innerHTML = renamed ? '<b>Check the name carefully</b><br>If the new database name already exists, restoring can overwrite it. Choose a new name or explicitly confirm the overwrite.' : '<b>Destructive action</b><br>This can overwrite the latest data in the destination database(s). Confirm that you have a recent backup and selected the correct destination.'; }; mode.onchange = update; update(); $('#restore-submit').onclick = async () => { const submit = $('#restore-submit'); const newName = $('#restore-database-name').value.trim(); if (mode.value === 'new' && !/^[A-Za-z0-9_]{1,64}$/.test(newName)) return toast('Enter a valid new database name', true); if (!$('#restore-confirm').checked) return toast('Confirm the restore warning before continuing', true); submit.disabled = true; try { const result = await api(`/api/runs/${encodeURIComponent(id)}/restore`, { method: 'POST', body: JSON.stringify({ connectionId: $('#restore-connection').value, mode: mode.value, databaseName: newName, overwriteConfirmed: true }) }); closeRestoreModal(); toast(result.message || `Restore completed on ${result.destination}`); } catch (e) { toast(e.message, true); submit.disabled = false; } }; }
-function renderRuns() { collectionControls('runs', 'runs-controls', 'Search schedule, filename, or error', true); const section = $('#view-runs'); const header = section.querySelector('thead tr'); if (header && !header.querySelector('[data-verification]')) header.insertAdjacentHTML('beforeend', '<th data-verification>Verification</th><th>Action</th>'); $('#runs-table').innerHTML = state.runs.map(r => `<tr><td><b>${esc(r.jobName)}</b><br><small>${esc(r.filename || r.errorMessage || '—')}</small></td><td><span class="status ${esc(r.status)}">${esc(r.status)}</span></td><td>${fmtDate(r.startedAt)}</td><td>${fmtBytes(r.sizeBytes)}</td><td class="checksum">${r.sha256 ? esc(r.sha256.slice(0, 16)) + '…' : '—'}</td><td>${r.verificationStatus === 'passed' ? '<span class="verified">Archive verified</span>' : esc(r.verificationStatus || '—')}</td><td>${r.status === 'success' ? `<a class="small-button" href="/api/runs/${encodeURIComponent(r.id)}/download" download>Download</a>${state.role === 'admin' ? `<button class="small-button" onclick="openRestoreModal('${r.id}')">Restore</button>` : ''}` : r.status === 'failed' ? `<button class="small-button" onclick="retryRun('${r.id}')">Retry</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">No backup runs match this search.</td></tr>'; renderCollectionPagination('runs', 'runs-pagination'); }
+function renderRuns() { collectionControls('runs', 'runs-controls', 'Search schedule, filename, or error', true); const section = $('#view-runs'); const header = section.querySelector('thead tr'); if (header && !header.querySelector('[data-verification]')) header.insertAdjacentHTML('beforeend', '<th data-verification>Verification</th><th>Action</th>'); $('#runs-table').innerHTML = state.runs.map(r => `<tr><td><b>${esc(r.jobName)}</b><br><small>${esc(r.filename || r.errorMessage || '—')}</small></td><td><span class="status ${esc(r.status)}">${esc(r.status)}</span></td><td>${fmtDate(r.startedAt)}</td><td>${fmtBytes(r.sizeBytes)}</td><td class="checksum">${r.sha256 ? esc(r.sha256.slice(0, 16)) + '…' : '—'}</td><td>${r.verificationStatus === 'passed' ? '<span class="verified">Archive verified</span>' : esc(r.verificationStatus || '—')}</td><td>${r.status === 'success' ? `<a class="small-button" href="/api/runs/${encodeURIComponent(r.id)}/download" download>Download</a><button class="small-button" onclick="showVerificationReport('${r.id}')">Report</button>${state.role === 'admin' ? `<button class="small-button" onclick="openRestoreModal('${r.id}')">Restore</button>` : ''}` : r.status === 'failed' ? `<button class="small-button" onclick="retryRun('${r.id}')">Retry</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">No backup runs match this search.</td></tr>'; renderCollectionPagination('runs', 'runs-pagination'); }
 let processModalPreviousFocus = null;
 
 function processStatusText(item) {
@@ -921,12 +986,8 @@ async function loadLiveProcesses() {
 }
 
 function syncLiveProcessPolling() {
-  if (state.csrf) {
-    if (!liveProcessTimer) liveProcessTimer = setInterval(() => void loadLiveProcesses(), 2000);
-  } else if (liveProcessTimer) {
-    clearInterval(liveProcessTimer);
-    liveProcessTimer = null;
-  }
+  if (liveProcessTimer) clearInterval(liveProcessTimer);
+  liveProcessTimer = null;
 }
 
 function initializeProcessIndicator() {
@@ -981,21 +1042,13 @@ function initializeUpdateIndicator() {
 }
 
 function syncUpdateCheckPolling() {
-  const active = state.csrf && state.role === 'admin';
-  if (!active) {
-    if (updateCheckTimer) clearInterval(updateCheckTimer);
-    updateCheckTimer = null;
-    return;
-  }
-  if (!updateCheckTimer) {
-    updateCheckTimer = setInterval(() => {
-      if (!document.hidden) void loadUpdateInfo(true);
-    }, updateCheckIntervalMs);
-  }
+  if (updateCheckTimer) clearInterval(updateCheckTimer);
+  updateCheckTimer = null;
 }
 
 async function loadAll() {
   await Promise.all(['connections', 'storage', 'jobs', 'runs'].map(loadCollection));
+  try { state.storageHealth = await api('/api/storage/health'); } catch { state.storageHealth = []; }
   if (state.role === 'admin') await loadCollection('users'); else state.users = [];
   updateRoleUi();
   syncUpdateCheckPolling();
@@ -1011,6 +1064,7 @@ async function loadAll() {
   renderProcesses();
   await loadLiveProcesses();
   syncLiveProcessPolling();
+  connectRealtime();
 }
 
 initializeProcessIndicator();
@@ -1056,8 +1110,40 @@ function ensureRestartPanel() {
 
 ensureRestartPanel();
 
+function ensureEscalationPanel() {
+  const settingsView = $('#view-settings');
+  if (!settingsView || $('#notification-escalation-panel')) return;
+  const panel = document.createElement('div');
+  panel.id = 'notification-escalation-panel';
+  panel.className = 'panel admin-only-setting';
+  panel.innerHTML = '<div class="panel-head"><div><span class="kicker">ALERT POLICY</span><h3>Escalation events</h3></div></div><p class="hint">Choose which retry, stale-backup, and storage-health events should be delivered with your configured notification provider.</p><div class="settings-checks"><label><input id="notify-retry" type="checkbox" /> Retry schedules</label><label><input id="notify-stale" type="checkbox" /> Stale backups</label><label><input id="notify-storage" type="checkbox" /> Storage failures</label></div>';
+  settingsView.insertBefore(panel, settingsView.querySelector('.admin-panel'));
+}
+
+function ensureAuditPanel() {
+  const settingsView = $('#view-settings');
+  if (!settingsView || $('#audit-panel')) return;
+  const panel = document.createElement('div');
+  panel.id = 'audit-panel';
+  panel.className = 'panel admin-only-setting';
+  panel.innerHTML = '<div class="panel-head"><div><span class="kicker">ACCOUNTABILITY</span><h3>Audit log</h3></div></div><p class="hint">Administrative actions are recorded here without storing passwords or access tokens.</p><div id="audit-list" class="audit-list"><div class="empty">Loading audit events…</div></div><div id="audit-pagination"></div>';
+  settingsView.appendChild(panel);
+}
+
+async function loadAudit() {
+  try { state.audit = await api(`/api/settings/audit?page=${state.audit.page}&pageSize=${state.audit.pageSize}`); } catch { state.audit = { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }; }
+  const list = $('#audit-list');
+  if (!list) return;
+  list.innerHTML = state.audit.items.map(item => `<div class="audit-row"><div><b>${esc(item.action)}</b><small>${esc(item.username || 'system')} · ${fmtDate(item.createdAt)}</small></div><code>${esc(JSON.stringify(item.metadata || {}))}</code></div>`).join('') || '<div class="empty">No audit events yet.</div>';
+  const pagination = $('#audit-pagination');
+  if (pagination) pagination.innerHTML = `<div class="pagination"><span>${state.audit.total} total</span><div><button class="small-button" ${state.audit.page <= 1 ? 'disabled' : ''} onclick="changeAuditPage(-1)">Previous</button><b>Page ${state.audit.page} of ${state.audit.pageCount}</b><button class="small-button" ${state.audit.page >= state.audit.pageCount ? 'disabled' : ''} onclick="changeAuditPage(1)">Next</button></div></div>`;
+}
+function changeAuditPage(delta) { state.audit.page = Math.max(1, Math.min(state.audit.pageCount, state.audit.page + delta)); void loadAudit(); }
+
 var vaultbackBaseRenderSettings = function() {
   const isAdmin = state.role === 'admin';
+  ensureEscalationPanel();
+  ensureAuditPanel();
   $('#admin-permission-note').classList.toggle('hidden', isAdmin);
   $('#new-user').classList.toggle('hidden', !isAdmin);
   $('#restart-panel')?.classList.toggle('hidden', !isAdmin);
@@ -1068,6 +1154,9 @@ var vaultbackBaseRenderSettings = function() {
   $('#notification-provider').value = notification.provider || 'discord';
   $('#notify-success').checked = Boolean(notification.events?.backup_success);
   $('#notify-failed').checked = notification.events?.backup_failed !== false;
+  $('#notify-retry').checked = notification.events?.backup_retry !== false;
+  $('#notify-stale').checked = notification.events?.backup_stale !== false;
+  $('#notify-storage').checked = notification.events?.storage_failed !== false;
   $('#notify-capacity').checked = notification.events?.capacity_warning !== false;
   updateNotificationFields();
   if (!document.body.dataset.settingsBound) {
@@ -1099,6 +1188,9 @@ var vaultbackBaseRenderSettings = function() {
   void loadDependencyDiagnostics();
   const migration = $('#migration-panel');
   if (migration) migration.classList.toggle('hidden', !isAdmin);
+  $('#notification-escalation-panel')?.classList.toggle('hidden', !isAdmin);
+  $('#audit-panel')?.classList.toggle('hidden', !isAdmin);
+  if (isAdmin) void loadAudit();
 };
 
 function userManagementActions(user) {
@@ -1310,17 +1402,8 @@ var sessionsRefreshTimer = null;
 var sessionsRefreshInFlight = false;
 
 function syncSessionsRefreshPolling() {
-  const active = state.currentView === 'sessions' && state.role === 'admin';
-  if (!active) {
-    if (sessionsRefreshTimer) clearInterval(sessionsRefreshTimer);
-    sessionsRefreshTimer = null;
-    return;
-  }
-  if (!sessionsRefreshTimer) {
-    sessionsRefreshTimer = setInterval(() => {
-      if (!document.hidden) void loadSessions();
-    }, 2000);
-  }
+  if (sessionsRefreshTimer) clearInterval(sessionsRefreshTimer);
+  sessionsRefreshTimer = null;
 }
 
 async function loadSessions() {

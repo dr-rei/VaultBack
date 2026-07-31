@@ -11,6 +11,7 @@ export class SystemController {
   @Get('capacity') capacity(@Req() req: FastifyRequest) { this.auth.requireSession(req); return this.system.capacity(); }
   @Get('setup') setup(@Req() req: FastifyRequest) { this.auth.requireSession(req); return this.system.setupStatus(); }
   @Get('rate-limit-usage') rateLimitUsage(@Req() req: FastifyRequest) { this.auth.requireAdmin(req); return this.system.listApiUsage((req as any).query || {}); }
+  @Get('audit') audit(@Req() req: FastifyRequest) { this.auth.requireAdmin(req); return this.system.listAudit((req as any).query || {}); }
   @Get('export') exportConfig(@Req() req: FastifyRequest) { const session = this.auth.requireAdmin(req); this.system.audit(session.user_id, 'config.export'); return this.system.exportSafeConfig(); }
   @Post('export/full') fullExport(@Req() req: FastifyRequest, @Body() body: any, @Res() reply: FastifyReply) { const session = this.auth.requireAdmin(req); const result = this.system.fullExport(String(body.password || '')); this.system.audit(session.user_id, 'config.full_export'); reply.header('Content-Disposition', 'attachment; filename="vaultback-encrypted-export.json"'); reply.type('application/json'); return reply.send(JSON.stringify(result)); }
   @Post('import/full') fullImport(@Req() req: FastifyRequest, @Body() body: any) { const session = this.auth.requireAdmin(req); const result = this.system.importFull(body.package, String(body.password || '')); this.system.audit(session.user_id, 'config.full_import'); return result; }

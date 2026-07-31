@@ -160,6 +160,7 @@ DATA_DIR=/www/wwwroot/vaultback/data
 APP_ENCRYPTION_KEY=the-value-generated-by-the-prepare-script
 ALLOW_ANY_LOCAL_PATH=false
 RATE_LIMIT_PER_MINUTE=800
+BACKUP_STALE_AFTER_HOURS=26
 MAX_LOGIN_SESSIONS_PER_USER=0
 UPDATE_CHANNEL=stable
 UPDATE_PM2_APP=vaultback
@@ -237,7 +238,7 @@ In aaPanel:
 1. Open **Website → Add site** and create the domain.
 2. Open the site’s **Reverse Proxy** settings.
 3. Add a proxy to `http://127.0.0.1:3010`.
-4. Enable **WebSocket** support if aaPanel offers that option.
+4. Enable **WebSocket** support if aaPanel offers that option, and disable proxy buffering for the proxy location. VaultBack uses authenticated Server-Sent Events (`/api/events`) for live updates; buffering would make process and session changes appear late.
 5. Issue an SSL certificate and enable **Force HTTPS**.
 6. Open the HTTPS domain in a browser and create the first VaultBack administrator.
 

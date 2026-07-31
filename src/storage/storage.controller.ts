@@ -9,5 +9,7 @@ export class StorageController {
   @Get() list(@Req() req: FastifyRequest) { this.auth.requireSession(req); return this.storage.listPage((req as any).query || {}); }
   @Post() save(@Req() req: FastifyRequest, @Body() body: any) { this.auth.requireAdmin(req); return this.storage.save(body); }
   @Post(':id/test') async test(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.storage.test(this.storage.get(id)); }
+  @Get('health') healthSummary(@Req() req: FastifyRequest) { this.auth.requireSession(req); return this.storage.healthSummary(); }
+  @Post(':id/health') async health(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.storage.health(this.storage.get(id)); }
   @Delete(':id') delete(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.storage.delete(id); }
 }

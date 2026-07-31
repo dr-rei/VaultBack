@@ -11,6 +11,7 @@ import { AppModule } from './app.module';
 import { isProductionEnvironment, rateLimitPerMinute } from './common/app-config';
 import { EnvironmentExceptionFilter } from './common/environment-exception.filter';
 import { SystemService } from './system/system.service';
+import { AuthService } from './auth/auth.service';
 
 type ApplicationProtocol = 'http' | 'https' | 'both';
 
@@ -56,12 +57,13 @@ async function bootstrap() {
   await app.register(helmet, { contentSecurityPolicy: false });
   const server = app.getHttpAdapter().getInstance();
   const system = app.get(SystemService);
+  const auth = app.get(AuthService);
   server.addHook('onRequest', async (request, reply) => {
     if (!domains.includes(normalizeHost(request.headers?.host))) return reply.code(421).send({ message: 'Host not allowed' });
   });
   server.addHook('onRequest', async (request) => {
     const requestPath = String(request.url || '').split('?')[0];
-    if (requestPath.startsWith('/api/') && !/^\/api\/auth\/(login|setup)$/.test(requestPath)) system.recordApiRequest(request);
+    if (requestPath.startsWith('/api/') && requestPath !== '/api/events' && !/^\/api\/auth\/(login|setup)$/.test(requestPath)) system.recordApiRequest(request);
   });
   if (isProduction) {
     // Rate-limit API traffic without making normal frontend assets compete for
@@ -74,7 +76,8 @@ async function bootstrap() {
     server.addHook('onRequest', async (request, reply) => {
       const requestPath = String(request.url || '').split('?')[0];
       if (!requestPath.startsWith('/api/')) return;
-      const limiter = /^\/api\/auth\/(login|setup)$/.test(requestPath) ? authRateLimit : apiRateLimit;
+      if (requestPath === '/api/events' && auth.getSession(request)) return;
+      const limiter = /^\/api\/auth\/(login|setup)$/.test(requestPath) || requestPath === '/api/events' ? authRateLimit : apiRateLimit;
       return limiter.call(server, request, reply);
     });
   }

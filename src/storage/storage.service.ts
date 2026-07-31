@@ -8,10 +8,11 @@ import path from 'node:path';
 import { DatabaseService } from '../database/database.service';
 import { StorageTarget, StorageType } from '../types';
 import { ensureDirectory, isWithin } from '../backup/backup.utils';
+import { RealtimeService } from '../system/realtime.service';
 
 @Injectable()
 export class StorageService {
-  constructor(private readonly store: DatabaseService) {}
+  constructor(private readonly store: DatabaseService, private readonly realtime: RealtimeService) {}
 
   listPage(input: any = {}) {
     this.store.assertEncryptionHealthy(); const page = Math.max(1, Number.parseInt(String(input.page || '1'), 10) || 1); const pageSize = Math.min(100, Math.max(10, Number.parseInt(String(input.pageSize || '25'), 10) || 25)); const offset = (page - 1) * pageSize; const search = String(input.search || '').trim().toLowerCase(); const where = search ? `WHERE LOWER(COALESCE(name,'') || ' ' || COALESCE(type,'')) LIKE ?` : ''; const params = search ? [`%${search}%`] : []; const total = Number((this.store.db.prepare(`SELECT COUNT(*) as count FROM storage_targets ${where}`).get(...params) as any)?.count || 0); const rows = this.store.db.prepare(`SELECT * FROM storage_targets ${where} ORDER BY name LIMIT ? OFFSET ?`).all(...params, pageSize, offset) as any[]; const items = rows.map(row => ({ id: row.id, name: row.name, type: row.type, config: this.redact(this.store.decrypt(row.config_enc)), createdAt: row.created_at })); return { items, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
@@ -125,6 +126,32 @@ export class StorageService {
     if (target.type === 'google-drive' && !c.accessToken && !(c.refreshToken && c.clientId && c.clientSecret)) throw new Error('Google Drive needs an access token or refresh-token OAuth credentials');
     if (target.type === 'onedrive' && !c.accessToken && !(c.refreshToken && c.clientId && c.clientSecret)) throw new Error('OneDrive needs an access token or refresh-token OAuth credentials');
     return { ok: true, message: 'Cloud credentials are configured; a live upload will verify them' };
+  }
+
+  async health(target: StorageTarget) {
+    const started = Date.now();
+    try {
+      const result = await this.test(target);
+      const checkedAt = this.store.now();
+      let freeBytes: number | null = null;
+      if (target.type === 'local') {
+        const stat = (fs as any).statfsSync(this.localDir(target));
+        freeBytes = Number(stat.bavail) * Number(stat.bsize);
+      }
+      const health = { targetId: target.id, status: 'healthy', message: result.message, latencyMs: Date.now() - started, checkedAt, freeBytes };
+      this.store.db.prepare(`INSERT INTO storage_health (target_id,status,message,latency_ms,checked_at) VALUES (?,?,?,?,?) ON CONFLICT(target_id) DO UPDATE SET status=excluded.status,message=excluded.message,latency_ms=excluded.latency_ms,checked_at=excluded.checked_at`).run(target.id, health.status, health.message, health.latencyMs, health.checkedAt);
+        this.realtime.publish('storage_health', this.healthSummary());
+        return health;
+    } catch (error: any) {
+      const health = { targetId: target.id, status: 'unavailable', message: String(error?.message || error).slice(0, 500), latencyMs: Date.now() - started, checkedAt: this.store.now(), freeBytes: null };
+      this.store.db.prepare(`INSERT INTO storage_health (target_id,status,message,latency_ms,checked_at) VALUES (?,?,?,?,?) ON CONFLICT(target_id) DO UPDATE SET status=excluded.status,message=excluded.message,latency_ms=excluded.latency_ms,checked_at=excluded.checked_at`).run(target.id, health.status, health.message, health.latencyMs, health.checkedAt);
+        this.realtime.publish('storage_health', this.healthSummary());
+        throw error;
+    }
+  }
+
+  healthSummary() {
+    return this.store.db.prepare(`SELECT h.target_id as targetId,s.name,h.status,h.message,h.latency_ms as latencyMs,h.checked_at as checkedAt FROM storage_health h JOIN storage_targets s ON s.id=h.target_id ORDER BY s.name`).all();
   }
 
   private validateFilename(filename: string) { if (!filename || path.basename(filename) !== filename || /[\\/\0]/.test(filename)) throw new BadRequestException('Invalid backup filename'); }

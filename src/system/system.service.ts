@@ -5,8 +5,9 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { environmentName, isProductionEnvironment, rateLimitPerMinute } from '../common/app-config';
 import { DatabaseService } from '../database/database.service';
+import { RealtimeService } from './realtime.service';
 
-export type NotificationEvent = 'backup_success' | 'backup_failed' | 'capacity_warning';
+export type NotificationEvent = 'backup_success' | 'backup_failed' | 'backup_retry' | 'backup_stale' | 'storage_failed' | 'capacity_warning';
 
 type ReleaseArtifact = { url: string; sha256: string; bytes?: number };
 type ReleaseSummary = { version: string; releaseNotesUrl?: string; publishedAt?: string };
@@ -17,7 +18,7 @@ type ReleaseManifest = { version: string; channel?: string; releaseNotesUrl?: st
 export class SystemService {
   private readonly logger = new Logger(SystemService.name);
   private readonly apiUsage = new Map<string, { windowStart: number; count: number; lastSeen: number }>();
-  constructor(private readonly store: DatabaseService) {}
+  constructor(private readonly store: DatabaseService, private readonly realtime: RealtimeService) {}
 
   private configuredRateLimit() {
     return rateLimitPerMinute();
@@ -34,7 +35,7 @@ export class SystemService {
   }
 
   getNotificationSettings() {
-    const config = this.readSetting<any>('notification_settings', { enabled: false, provider: 'discord', webhookUrl: '', botToken: '', chatId: '', events: { backup_success: false, backup_failed: true, capacity_warning: true } });
+    const config = this.readSetting<any>('notification_settings', { enabled: false, provider: 'discord', webhookUrl: '', botToken: '', chatId: '', events: { backup_success: false, backup_failed: true, backup_retry: true, backup_stale: true, storage_failed: true, capacity_warning: true } });
     return { enabled: Boolean(config.enabled), provider: config.provider || 'discord', webhookConfigured: Boolean(config.webhookUrl || config.botToken), events: config.events || {} };
   }
 
@@ -44,7 +45,7 @@ export class SystemService {
     if (input.enabled && provider === 'telegram' && (!input.botToken || !input.chatId)) throw new BadRequestException('Telegram bot token and chat ID are required');
     const old = this.readSetting<any>('notification_settings', {});
     const secret = (next: unknown, previous: unknown) => String(next || '').trim() || String(previous || '');
-    const value = { enabled: Boolean(input.enabled), provider, webhookUrl: String(input.webhookUrl || '').trim(), webhookToken: secret(input.webhookToken, old.webhookToken), botToken: secret(input.botToken, old.botToken), chatId: String(input.chatId || '').trim(), events: { backup_success: Boolean(input.events?.backup_success), backup_failed: input.events?.backup_failed !== false, capacity_warning: input.events?.capacity_warning !== false } };
+    const value = { enabled: Boolean(input.enabled), provider, webhookUrl: String(input.webhookUrl || '').trim(), webhookToken: secret(input.webhookToken, old.webhookToken), botToken: secret(input.botToken, old.botToken), chatId: String(input.chatId || '').trim(), events: { backup_success: Boolean(input.events?.backup_success), backup_failed: input.events?.backup_failed !== false, backup_retry: input.events?.backup_retry !== false, backup_stale: input.events?.backup_stale !== false, storage_failed: input.events?.storage_failed !== false, capacity_warning: input.events?.capacity_warning !== false } };
     this.writeSetting('notification_settings', value);
     return this.getNotificationSettings();
   }
@@ -97,6 +98,7 @@ export class SystemService {
     entry.lastSeen = now;
     this.apiUsage.set(ip, entry);
     this.pruneApiUsage(now, windowStart);
+    this.realtime.publishThrottled('rate_limit', this.listApiUsage({ page: 1, pageSize: 100 }), 750);
   }
 
   listApiUsage(input: any = {}) {
@@ -144,15 +146,15 @@ export class SystemService {
   fullExport(password: string) {
     this.requireExportPassword(password);
     const database = fs.readFileSync(this.store.databaseFilePath());
-    const payload = Buffer.from(JSON.stringify({ format: 'vaultback-full-export', version: 1, exportedAt: new Date().toISOString(), database: database.toString('base64url'), encryptionKey: this.store.encryptionKeyValue() }), 'utf8');
+    const payload = Buffer.from(JSON.stringify({ format: 'vaultback-full-export', version: 2, exportedAt: new Date().toISOString(), appVersion: this.appVersion(), platform: process.platform, nodeVersion: process.version, database: database.toString('base64url'), encryptionKey: this.store.encryptionKeyValue(), recovery: { preserveDataDir: true, preserveAppEncryptionKey: true, restartRequired: true } }), 'utf8');
     const salt = crypto.randomBytes(16); const iv = crypto.randomBytes(12); const key = this.exportKey(password, salt); const cipher = crypto.createCipheriv('aes-256-gcm', key, iv); cipher.setAAD(Buffer.from('vaultback-full-export-v1'));
     const ciphertext = Buffer.concat([cipher.update(payload), cipher.final()]);
-    return { format: 'vaultback-encrypted-export', version: 1, kdf: 'scrypt', salt: salt.toString('base64url'), iv: iv.toString('base64url'), tag: cipher.getAuthTag().toString('base64url'), ciphertext: ciphertext.toString('base64url') };
+    return { format: 'vaultback-encrypted-export', version: 2, kdf: 'scrypt', salt: salt.toString('base64url'), iv: iv.toString('base64url'), tag: cipher.getAuthTag().toString('base64url'), ciphertext: ciphertext.toString('base64url') };
   }
 
   importFull(input: any, password: string) {
     this.requireExportPassword(password); const envelope = typeof input === 'string' ? JSON.parse(input) : input;
-    if (!envelope || envelope.format !== 'vaultback-encrypted-export' || envelope.version !== 1) throw new BadRequestException('Unsupported VaultBack export package');
+    if (!envelope || envelope.format !== 'vaultback-encrypted-export' || ![1, 2].includes(Number(envelope.version))) throw new BadRequestException('Unsupported VaultBack export package');
     try {
       const salt = Buffer.from(String(envelope.salt), 'base64url'); const iv = Buffer.from(String(envelope.iv), 'base64url'); const tag = Buffer.from(String(envelope.tag), 'base64url'); const ciphertext = Buffer.from(String(envelope.ciphertext), 'base64url');
       if (salt.length !== 16 || iv.length !== 12 || tag.length !== 16 || !ciphertext.length || ciphertext.length > 50 * 1024 * 1024) throw new Error('Invalid encrypted package');
@@ -172,6 +174,26 @@ export class SystemService {
     }, 350);
     timer.unref?.();
     return { ok: true, message: 'Restart requested. The service manager should bring VaultBack back online shortly.' };
+  }
+
+  async notifyOnce(event: NotificationEvent, key: string, message: string, cooldownMinutes = 60) {
+    const settingKey = `notification:last:${event}:${key}`;
+    const last = this.readSetting<number>(settingKey, 0);
+    if (Date.now() - last < cooldownMinutes * 60 * 1000) return;
+    this.writeSetting(settingKey, Date.now());
+    await this.notify(event, message);
+  }
+
+  listAudit(input: any = {}) {
+    const page = Math.max(1, Number.parseInt(String(input.page || '1'), 10) || 1);
+    const pageSize = Math.min(100, Math.max(10, Number.parseInt(String(input.pageSize || '25'), 10) || 25));
+    const offset = (page - 1) * pageSize;
+    const search = String(input.search || '').trim().toLowerCase();
+    const where = search ? `WHERE LOWER(a.action || ' ' || COALESCE(a.entity_type,'') || ' ' || COALESCE(a.metadata_json,'') || ' ' || COALESCE(u.username,'')) LIKE ?` : '';
+    const params = search ? [`%${search}%`] : [];
+    const total = Number((this.store.db.prepare(`SELECT COUNT(*) as count FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id ${where}`).get(...params) as any)?.count || 0);
+    const items = this.store.db.prepare(`SELECT a.id,a.action,a.entity_type as entityType,a.entity_id as entityId,a.metadata_json as metadataJson,a.created_at as createdAt,u.username FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id ${where} ORDER BY a.created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset) as any[];
+    return { items: items.map(item => { let metadata: unknown = {}; try { metadata = JSON.parse(item.metadataJson || '{}'); } catch {} return { ...item, metadata }; }), total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
   }
 
   private appVersion() {
@@ -250,14 +272,16 @@ export class SystemService {
     const releaseNotesUrl = /^https:\/\//i.test(String(manifest.releaseNotesUrl || '')) ? String(manifest.releaseNotesUrl) : '';
     const releases = Array.isArray(manifest.releases) ? manifest.releases : [{ version: String(manifest.version), releaseNotesUrl, publishedAt: String(manifest.publishedAt || '') }];
     this.writeUpdateStatus({ state: available ? 'available' : 'current', checkedAt: new Date().toISOString(), currentVersion, latestVersion: String(manifest.version), channel: String(manifest.channel || process.env.UPDATE_CHANNEL || 'stable'), releaseNotesUrl, publishedAt: manifest.publishedAt || '', releases, artifact: artifact || null, error: '' });
-    return this.updateInfo();
+    const result = this.updateInfo();
+    this.realtime.publish('updates', result);
+    return result;
   }
 
   startUpdate(userId: string) {
     const saved = this.readUpdateStatus(); const currentVersion = this.appVersion(); const targetVersion = String(saved.latestVersion || '');
     if (!saved.artifact || !targetVersion || this.compareVersions(targetVersion, currentVersion) <= 0) throw new BadRequestException('Check for a newer release before starting an update.');
     const script = path.join(process.cwd(), 'scripts', 'update.mjs'); const configuredProtocol = String(process.env.APP_PROTOCOL || 'http').toLowerCase(); const protocol = configuredProtocol === 'https' || configuredProtocol === 'both' ? 'https' : 'http'; const port = configuredProtocol === 'both' ? Number(process.env.HTTPS_PORT || 3443) : Number(process.env.PORT || 3010); const healthUrl = `${protocol}://127.0.0.1:${port}/api/health`; const healthHost = String(process.env.APP_DOMAIN || '127.0.0.1').split(',')[0].trim() || '127.0.0.1';
-    this.writeUpdateStatus({ state: 'queued', progress: 0, targetVersion, error: '' }); this.audit(userId, 'system.update.start', undefined, targetVersion);
+    this.writeUpdateStatus({ state: 'queued', progress: 0, targetVersion, error: '' }); this.realtime.publish('updates', this.updateInfo()); this.audit(userId, 'system.update.start', undefined, targetVersion);
     const child = spawn(process.execPath, [script, '--app-root', process.cwd(), '--data-dir', this.store.dataDir, '--version', targetVersion, '--url', String(saved.artifact.url), '--sha256', String(saved.artifact.sha256), '--health-url', healthUrl, '--health-host', healthHost, ...(process.env.UPDATE_PM2_APP ? ['--pm2-app', String(process.env.UPDATE_PM2_APP)] : [])], { cwd: process.cwd(), detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
     child.once('error', error => this.writeUpdateStatus({ state: 'failed', error: String(error.message || error).slice(0, 300) })); child.unref();
     const timer = setTimeout(() => { try { process.kill(process.pid, 'SIGTERM'); } catch (error: any) { this.logger.error(`Update shutdown failed: ${String(error?.message || error)}`); } }, 900); timer.unref?.();

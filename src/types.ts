@@ -44,7 +44,11 @@ export interface BackupJob {
   timezone: string;
   enabled: boolean;
   compression: 'none' | 'gzip' | 'zip';
+  backupEncryption: 'none' | 'aes-256-gcm';
   retentionCount: number;
+  retryCount: number;
+  retryDelaySeconds: number;
+  overlapPolicy: 'skip' | 'queue';
   filenamePrefix: string;
   nextRunAt: string | null;
   lastRunAt: string | null;
