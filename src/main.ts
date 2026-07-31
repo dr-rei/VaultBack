@@ -8,7 +8,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { AppModule } from './app.module';
-import { isProductionEnvironment, rateLimitPerMinute } from './common/app-config';
+import { configuredEnvValue, isProductionEnvironment, rateLimitPerMinute } from './common/app-config';
 import { EnvironmentExceptionFilter } from './common/environment-exception.filter';
 import { SystemService } from './system/system.service';
 import { AuthService } from './auth/auth.service';
@@ -29,9 +29,9 @@ function normalizeHost(value: unknown) {
 }
 
 function allowedDomains() {
-  const configured = String(process.env.APP_DOMAIN || '').split(',').map(normalizeHost).filter(Boolean);
+  const configured = configuredEnvValue('APP_DOMAIN').split(',').map(normalizeHost).filter(Boolean);
   if (configured.length) return configured;
-  if (String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production') throw new Error('APP_DOMAIN is required when NODE_ENV=production. Set one or more allowed hostnames separated by commas.');
+  if (isProductionEnvironment()) throw new Error('APP_DOMAIN is required when NODE_ENV=production. Set one or more allowed hostnames separated by commas.');
   return ['localhost', '127.0.0.1', '::1'];
 }
 

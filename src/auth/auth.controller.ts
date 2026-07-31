@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Req, Res } from '@ne
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { AuthService } from './auth.service';
 import { RealtimeService } from '../system/realtime.service';
+import { isProductionEnvironment } from '../common/app-config';
 
 @Controller('api/auth')
 export class AuthController {
@@ -39,6 +40,6 @@ export class AuthController {
   @Post('users/:id/logout-sessions') logoutUserSessions(@Req() request: FastifyRequest, @Param('id') id: string) { const session = this.auth.requireAdmin(request); const result = this.auth.forceLogoutUser(id, session.user_id); this.realtime.disconnectUser(id); this.realtime.publish('sessions', { reason: 'sessions_changed' }); return result; }
 
   private setCookie(reply: FastifyReply, value: string) {
-    reply.setCookie('vb_session', value, { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 60 * 60 * 12 });
+    reply.setCookie('vb_session', value, { httpOnly: true, sameSite: 'strict', secure: isProductionEnvironment(), path: '/', maxAge: 60 * 60 * 12 });
   }
 }

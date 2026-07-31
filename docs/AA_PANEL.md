@@ -168,6 +168,8 @@ UPDATE_PM2_APP=vaultback
 
 `RATE_LIMIT_PER_MINUTE` limits normal API requests per client IP in production. `MAX_LOGIN_SESSIONS_PER_USER=0` allows unlimited concurrent sessions for each account; set a positive value to remove the oldest sessions before a new login is created. Restart PM2 after changing `.env`.
 
+After the first administrator signs in, the runtime mode can also be changed from **Settings → Environment**. The control updates `NODE_ENV` in `.env`; choose **Save for next restart** or **Save and restart**. Only the first administrator can change this because production mode controls rate limiting and error-message disclosure. Keep `APP_DOMAIN` configured before selecting production. The `.env` value takes precedence over a stale `NODE_ENV` value retained by PM2.
+
 If the client commands are not detected automatically, open **Settings → Database tools** and use **Repair and redownload tools**. For unsupported platforms, copy licensed binaries into the application’s matching `tools/<engine>/<platform>-<arch>/bin/` directory.
 
 Do not replace `APP_ENCRYPTION_KEY` after the application has saved credentials. The same key and the same `data/` directory are required to read existing encrypted settings after a redeployment.

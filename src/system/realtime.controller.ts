@@ -7,16 +7,18 @@ import { SystemService } from './system.service';
 @Controller('api')
 export class RealtimeController {
   constructor(private readonly realtime: RealtimeService, private readonly auth: AuthService, private readonly system: SystemService) {
-    this.realtime.registerSnapshotProvider('sessions', context => this.auth.listActiveSessions({ cookies: { vb_session: context.sessionToken }, query: { page: 1, pageSize: 100 } } as any));
-    this.realtime.registerSnapshotProvider('rate_limit', () => this.system.listApiUsage({ page: 1, pageSize: 100 }));
+    this.realtime.registerSnapshotProvider('sessions', context => this.auth.listActiveSessions({ cookies: { vb_session: context.sessionToken }, query: { page: context.query.sessionPage || '1', pageSize: context.query.sessionPageSize || '25' } } as any));
+    this.realtime.registerSnapshotProvider('rate_limit', context => this.system.listApiUsage({ page: context.query.ratePage || '1', pageSize: context.query.ratePageSize || '25' }));
     this.realtime.registerSnapshotProvider('updates', () => this.system.updateInfo());
   }
 
   @Get('events') events(@Req() request: FastifyRequest, @Res() reply: FastifyReply) {
     const session = this.auth.requireSession(request);
     const rawTopics = String((request as any).query?.topics || '').split(',').map(value => value.trim()).filter(Boolean);
+    const requestQuery = (request as any).query || {};
+    const query = Object.fromEntries(Object.entries(requestQuery).map(([key, value]) => [key, String(value ?? '')]));
     reply.hijack();
-    this.realtime.connect(reply.raw, session.user_id, session.role, String(request.ip || request.socket?.remoteAddress || 'unknown'), String(request.cookies?.vb_session || ''), rawTopics);
+    this.realtime.connect(reply.raw, session.user_id, session.role, String(request.ip || request.socket?.remoteAddress || 'unknown'), String(request.cookies?.vb_session || ''), rawTopics, query);
     return undefined;
   }
 }

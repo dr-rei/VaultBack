@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { environmentName, isProductionEnvironment, rateLimitPerMinute } from '../common/app-config';
+import { configuredEnvValue, environmentName, isProductionEnvironment, rateLimitPerMinute, RuntimeEnvironment } from '../common/app-config';
 import { DatabaseService } from '../database/database.service';
 import { RealtimeService } from './realtime.service';
 
@@ -22,6 +22,49 @@ export class SystemService {
 
   private configuredRateLimit() {
     return rateLimitPerMinute();
+  }
+
+  environmentSettings() {
+    const currentEnvironment = environmentName();
+    const configuredEnvironment = String(configuredEnvValue('NODE_ENV') || currentEnvironment).toLowerCase() === 'production' ? 'production' : 'development';
+    return {
+      currentEnvironment,
+      configuredEnvironment,
+      pendingRestart: currentEnvironment !== configuredEnvironment,
+      productionProtections: configuredEnvironment === 'production',
+      requiresRestart: true
+    };
+  }
+
+  saveEnvironment(value: unknown) {
+    const environment = String(value || '').trim().toLowerCase() as RuntimeEnvironment;
+    if (environment !== 'development' && environment !== 'production') throw new BadRequestException('Environment must be development or production');
+    if (environment === 'production' && !configuredEnvValue('APP_DOMAIN')) throw new BadRequestException('Configure APP_DOMAIN before enabling production mode');
+    const envPath = path.resolve(process.cwd(), '.env');
+    try {
+      const existing = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+      const lines = existing.split(/\r?\n/);
+      const keyPattern = /^\s*#?\s*NODE_ENV\s*=/;
+      let replaced = false;
+      const nextLines = lines.map(line => {
+        if (!keyPattern.test(line)) return line;
+        if (replaced) return '';
+        replaced = true;
+        return `NODE_ENV=${environment}`;
+      });
+      if (!replaced) {
+        while (nextLines.length && nextLines[nextLines.length - 1] === '') nextLines.pop();
+        if (nextLines.length) nextLines.push('');
+        nextLines.push(`NODE_ENV=${environment}`);
+      }
+      const temporary = `${envPath}.${process.pid}.tmp`;
+      fs.writeFileSync(temporary, `${nextLines.join('\n').replace(/\n+$/, '')}\n`, { mode: 0o600 });
+      fs.renameSync(temporary, envPath);
+      try { fs.chmodSync(envPath, 0o600); } catch {}
+    } catch (error: any) {
+      throw new BadRequestException(`Could not save .env: ${String(error?.message || error).slice(0, 180)}`);
+    }
+    return { ...this.environmentSettings(), message: `Environment saved as ${environment}. Restart VaultBack to apply it.` };
   }
 
   private readSetting<T>(key: string, fallback: T): T {

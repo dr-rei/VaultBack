@@ -9,12 +9,13 @@ type Connection = {
   role: Role;
   ip: string;
   sessionToken: string;
+  query: Record<string, string>;
   response: ServerResponse;
   topics: Set<RealtimeTopic>;
   heartbeat: ReturnType<typeof setInterval>;
   connectedAt: number;
 };
-export type RealtimeSnapshotContext = { userId: string; role: Role; ip: string; sessionToken: string };
+export type RealtimeSnapshotContext = { userId: string; role: Role; ip: string; sessionToken: string; query: Record<string, string> };
 type SnapshotProvider = (context: RealtimeSnapshotContext) => unknown;
 
 @Injectable()
@@ -38,7 +39,7 @@ export class RealtimeService {
     return role === 'admin' ? [...common, 'sessions', 'rate_limit', 'updates'] : common;
   }
 
-  connect(response: ServerResponse, userId: string, role: Role, ip: string, sessionToken: string, requestedTopics: string[] = []) {
+  connect(response: ServerResponse, userId: string, role: Role, ip: string, sessionToken: string, requestedTopics: string[] = [], query: Record<string, string> = {}) {
     const allowed = new Set(this.allowedTopics(role));
     const topics = new Set<RealtimeTopic>(requestedTopics.filter((topic): topic is RealtimeTopic => allowed.has(topic as RealtimeTopic)));
     if (!topics.size) for (const topic of allowed) topics.add(topic);
@@ -55,6 +56,7 @@ export class RealtimeService {
       role,
       ip,
       sessionToken,
+      query,
       response,
       topics,
       heartbeat: setInterval(() => {
@@ -118,7 +120,7 @@ export class RealtimeService {
         const provider = this.snapshots.get(topic);
         if (!provider) continue;
         try {
-          const payload = provider({ userId: connection.userId, role: connection.role, ip: connection.ip, sessionToken: connection.sessionToken });
+          const payload = provider({ userId: connection.userId, role: connection.role, ip: connection.ip, sessionToken: connection.sessionToken, query: connection.query });
           if (payload && !this.writeEvent(connection, topic, payload)) this.close(connection.id);
         } catch (error: any) {
           this.logger.debug(`Realtime snapshot failed for ${topic}: ${String(error?.message || error).slice(0, 160)}`);

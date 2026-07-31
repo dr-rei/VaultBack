@@ -1,4 +1,4 @@
-const state = { csrf: '', userId: '', isPrimary: false, version: '', connections: [], storage: [], storageHealth: [], jobs: [], runs: [], processes: [], sessions: [], sessionInfo: null, audit: { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }, currentView: 'dashboard', dependencies: null, toolDiagnostics: null, toolDiagnosticsLoadedAt: 0, encryption: null, role: 'viewer', capacity: [], setupStatus: null, notifications: null, update: null, users: [], list: { connections: { page: 1, pageSize: 25, search: '' }, storage: { page: 1, pageSize: 25, search: '' }, jobs: { page: 1, pageSize: 25, search: '' }, runs: { page: 1, pageSize: 25, search: '', status: '' }, users: { page: 1, pageSize: 25, search: '' }, sessions: { page: 1, pageSize: 25 } }, meta: {} };
+const state = { csrf: '', userId: '', isPrimary: false, version: '', connections: [], storage: [], storageHealth: [], jobs: [], runs: [], processes: [], sessions: [], sessionInfo: null, audit: { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }, currentView: 'dashboard', dependencies: null, toolDiagnostics: null, toolDiagnosticsLoadedAt: 0, encryption: null, role: 'viewer', capacity: [], setupStatus: null, notifications: null, environment: null, update: null, users: [], list: { connections: { page: 1, pageSize: 25, search: '' }, storage: { page: 1, pageSize: 25, search: '' }, jobs: { page: 1, pageSize: 25, search: '' }, runs: { page: 1, pageSize: 25, search: '', status: '' }, users: { page: 1, pageSize: 25, search: '' }, sessions: { page: 1, pageSize: 25 } }, meta: {} };
 let liveProcessTimer = null;
 var updateCheckTimer = null;
 var updateCheckInFlight = false;
@@ -172,7 +172,10 @@ function connectRealtime() {
   if (!state.csrf || !window.EventSource) return;
   closeRealtime();
   const topics = 'processes,backup_runs,sessions,rate_limit,updates,storage_health';
-  const source = new EventSource(`/api/events?topics=${encodeURIComponent(topics)}`, { withCredentials: true });
+  const sessionsOptions = state.list.sessions || { page: 1, pageSize: 25 };
+  const usageOptions = state.list.apiUsage || { page: 1, pageSize: 25 };
+  const query = new URLSearchParams({ topics, sessionPage: String(sessionsOptions.page || 1), sessionPageSize: String(sessionsOptions.pageSize || 25), ratePage: String(usageOptions.page || 1), ratePageSize: String(usageOptions.pageSize || 25) });
+  const source = new EventSource(`/api/events?${query}`, { withCredentials: true });
   realtimeSource = source;
   source.addEventListener('processes', event => {
     const payload = realtimeJson(event);
@@ -185,8 +188,12 @@ function connectRealtime() {
     if ($('#process-live-status')) $('#process-live-status').innerHTML = `<span class="live-dot"></span> ${status}`;
     if ($('#process-modal-status')) $('#process-modal-status').innerHTML = `<span class="live-dot"></span>${status}`;
   });
-  source.addEventListener('sessions', () => {
-    if (state.currentView === 'sessions' && state.role === 'admin') void loadSessions();
+  source.addEventListener('sessions', event => {
+    const payload = realtimeJson(event);
+    if (!payload || state.role !== 'admin') return;
+    state.sessionInfo = payload;
+    state.sessions = payload.items || [];
+    if (state.currentView === 'sessions') renderSessionsWithUsage();
   });
   source.addEventListener('rate_limit', event => {
     const payload = realtimeJson(event);
@@ -513,6 +520,33 @@ document.addEventListener('click', event => {
 function formatCapacity(value) { if (value === null || value === undefined) return 'Unavailable'; if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`; if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`; return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`; }
 function updateNotificationFields() { const telegram = $('#notification-provider').value === 'telegram'; $('#notification-webhook-fields').classList.toggle('hidden', telegram); $('#notification-telegram-fields').classList.toggle('hidden', !telegram); }
 async function saveNotifications() { const button = $('#save-notifications'); try { await withButtonBusy(button, async () => { await api('/api/settings/notifications', { method: 'POST', body: JSON.stringify({ enabled: $('#notification-enabled').checked, provider: $('#notification-provider').value, webhookUrl: $('#notification-webhook-url').value, webhookToken: $('#notification-webhook-token').value, botToken: $('#notification-bot-token').value, chatId: $('#notification-chat-id').value, events: { backup_success: $('#notify-success').checked, backup_failed: $('#notify-failed').checked, backup_retry: $('#notify-retry')?.checked, backup_stale: $('#notify-stale')?.checked, storage_failed: $('#notify-storage')?.checked, capacity_warning: $('#notify-capacity').checked } }) }); toast('Notification settings saved'); state.notifications = await api('/api/settings/notifications'); renderSettings(); }, 'Saving settings…'); } catch (e) { toast(e.message, true); } }
+function renderEnvironmentSettings() {
+  const panel = $('#environment-panel');
+  if (!panel) return;
+  const isAdmin = state.role === 'admin';
+  panel.classList.toggle('hidden', !isAdmin);
+  const info = state.environment;
+  const select = $('#runtime-environment');
+  const current = $('#environment-current');
+  const badge = $('#environment-state-badge');
+  const status = $('#environment-status');
+  const save = $('#save-environment');
+  const apply = $('#apply-environment');
+  const configured = info?.configuredEnvironment || info?.currentEnvironment || 'development';
+  if (select) { select.value = configured; select.disabled = !state.isPrimary || !info; }
+  if (current) current.textContent = info?.currentEnvironment ? info.currentEnvironment[0].toUpperCase() + info.currentEnvironment.slice(1) : 'Checking…';
+  if (badge) { badge.textContent = info?.pendingRestart ? 'Restart required' : info?.currentEnvironment ? info.currentEnvironment[0].toUpperCase() + info.currentEnvironment.slice(1) : 'Checking'; badge.className = `tag ${info?.pendingRestart ? 'update-available' : ''}`; }
+  if (status) { status.classList.toggle('hidden', !info?.pendingRestart); status.textContent = info?.pendingRestart ? `Saved as ${configured}. Restart VaultBack to activate this environment.` : ''; }
+  if (save) save.classList.toggle('hidden', !state.isPrimary);
+  if (apply) apply.classList.toggle('hidden', !state.isPrimary);
+}
+async function loadEnvironmentSettings() { if (state.role !== 'admin') return; try { state.environment = await api('/api/settings/environment'); renderEnvironmentSettings(); } catch (e) { state.environment = { error: e.message }; renderEnvironmentSettings(); } }
+async function saveEnvironment(restart = false) {
+  const button = restart ? $('#apply-environment') : $('#save-environment');
+  const environment = $('#runtime-environment')?.value || 'development';
+  if (restart && !await appDialog({ title: 'Apply environment and restart?', message: `VaultBack will switch to ${environment} mode and restart through the configured process manager. Production hides detailed server errors and enables rate limiting; development does not.`, confirmText: 'Save and restart', cancelText: 'Cancel', danger: environment === 'production' })) return;
+  try { await withButtonBusy(button, async () => { const result = await api('/api/settings/environment', { method: 'POST', body: JSON.stringify({ environment, restart }) }); state.environment = result; renderEnvironmentSettings(); toast(result.message || (restart ? 'Environment saved; restart requested' : 'Environment saved')); }, restart ? 'Applying…' : 'Saving…'); } catch (e) { toast(e.message, true); }
+}
 async function deleteUser(id) { if (!await confirmAction('Remove this user account? Existing sessions for the account will stop working.','Delete user')) return; const button=document.querySelector(`button[onclick="deleteUser('${encodeURIComponent(id)}')"]`); try { await withButtonBusy(button, async()=>{ await api(`/api/auth/users/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadCollection('users'); toast('User deleted'); }, 'Deleting…'); } catch (e) { toast(e.message, true); } }
 async function exportSafeConfig() { try { const data = await api('/api/settings/export'); const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `vaultback-config-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(link.href); toast('Safe configuration exported'); } catch (e) { toast(e.message, true); } }
 
@@ -1145,6 +1179,7 @@ var vaultbackBaseRenderSettings = function() {
   ensureEscalationPanel();
   ensureAuditPanel();
   $('#admin-permission-note').classList.toggle('hidden', isAdmin);
+  renderEnvironmentSettings();
   $('#new-user').classList.toggle('hidden', !isAdmin);
   $('#restart-panel')?.classList.toggle('hidden', !isAdmin);
   $('#user-list').innerHTML = '';
@@ -1163,6 +1198,8 @@ var vaultbackBaseRenderSettings = function() {
     document.body.dataset.settingsBound = '1';
     $('#notification-provider').addEventListener('change', updateNotificationFields);
     $('#save-notifications').onclick = saveNotifications;
+    $('#save-environment').onclick = () => void saveEnvironment(false);
+    $('#apply-environment').onclick = () => void saveEnvironment(true);
     $('#export-config').onclick = () => void withButtonBusy($('#export-config'), exportSafeConfig, 'Exporting…');
   }
   $('#new-user').onclick = () => openUserModal();
@@ -1179,6 +1216,7 @@ var vaultbackBaseRenderSettings = function() {
     $('#install-update')?.addEventListener('click', () => void startUpdate());
   }
   renderUpdatePanel();
+  if (isAdmin && !state.environment) void loadEnvironmentSettings();
   if (!state.update) void loadUpdateInfo();
   const dependencyPanel = $('#dependency-tools-panel');
   const dependencyHints = dependencyPanel?.querySelectorAll('.hint');
@@ -1424,6 +1462,7 @@ async function loadSessions() {
     usageOptions.page = apiUsage.page;
     usageOptions.pageSize = apiUsage.pageSize;
     renderSessionsWithUsage();
+    connectRealtime();
   } catch (e) { toast(e.message, true); }
   finally { sessionsRefreshInFlight = false; }
 }
