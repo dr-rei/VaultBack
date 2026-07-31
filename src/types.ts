@@ -36,6 +36,9 @@ export interface BackupJob {
   name: string;
   databaseConnectionId: string;
   storageTargetId: string;
+  databaseConnectionIds?: string[];
+  storageTargetIds?: string[];
+  databaseSelections?: Array<{ connectionId: string; databases: string[] }>;
   databaseScope: 'all' | 'selected';
   databases: string[];
   backupLayout: 'single' | 'database' | 'table';

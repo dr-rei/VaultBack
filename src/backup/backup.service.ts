@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { StorageService } from '../storage/storage.service';
+import { StorageDownloadProgress, StorageService } from '../storage/storage.service';
 import { DatabaseService } from '../database/database.service';
 import { BackupJob, BackupObjectOptions, DatabaseConnection, StorageTarget } from '../types';
 import { ensureDirectory, nextCron, safeFilePart } from './backup.utils';
@@ -28,6 +28,21 @@ type LiveBackupProcess = {
   finishedAt?: string;
   logs: string[];
 };
+type DownloadPreparation = {
+  id: string;
+  userId: string;
+  runId: string;
+  filename: string;
+  state: 'preparing' | 'ready' | 'failed';
+  percent: number;
+  stage: 'checking' | 'connecting' | 'downloading' | 'finalizing' | 'ready' | 'failed';
+  message: string;
+  path?: string;
+  cleanup?: boolean;
+  error?: string;
+  updatedAt: number;
+  cleanupTimer?: ReturnType<typeof setTimeout>;
+};
 type ZipEntry = { name: string; method: number; compressedSize: number; uncompressedSize: number; localOffset: number };
 const ZIP_CRC_TABLE = Array.from({ length: 256 }, (_, index) => { let value = index; for (let bit = 0; bit < 8; bit++) value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : value >>> 1; return value >>> 0; });
 
@@ -37,6 +52,7 @@ export class BackupService {
   private readonly running = new Set<string>();
   private readonly queued = new Set<string>();
   private readonly liveProcessState = new Map<string, LiveBackupProcess>();
+  private readonly downloadPreparations = new Map<string, DownloadPreparation>();
   constructor(private readonly store: DatabaseService, private readonly storage: StorageService, private readonly system: SystemService, private readonly realtime: RealtimeService) {}
 
   private pageOptions(input: any = {}) { const page = Math.max(1, Number.parseInt(String(input.page || '1'), 10) || 1); const pageSize = Math.min(100, Math.max(10, Number.parseInt(String(input.pageSize || '25'), 10) || 25)); return { page, pageSize, offset: (page - 1) * pageSize, search: String(input.search || '').trim().toLowerCase() }; }
@@ -62,10 +78,10 @@ export class BackupService {
   }
 
   runsPage(input: any = {}) {
-    const { page, pageSize, offset, search } = this.pageOptions(input); const status = ['success', 'failed', 'running'].includes(String(input.status)) ? String(input.status) : ''; const conditions: string[] = []; const params: any[] = []; if (status) { conditions.push('r.status=?'); params.push(status); } if (search) { conditions.push(`LOWER(COALESCE(j.name,'') || ' ' || COALESCE(r.filename,'') || ' ' || COALESCE(r.error_message,'')) LIKE ?`); params.push(`%${search}%`); } const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''; const total = Number((this.store.db.prepare(`SELECT COUNT(*) as count FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id ${where}`).get(...params) as any)?.count || 0); const rows = this.store.db.prepare(`SELECT r.id,r.job_id as jobId,j.name as jobName,j.database_connection_id as databaseConnectionId,j.database_scope as databaseScope,j.database_names as databaseNames,r.status,r.started_at as startedAt,r.finished_at as finishedAt,r.filename,r.storage_location as storageLocation,r.size_bytes as sizeBytes,r.sha256,r.verification_status as verificationStatus,r.verification_message as verificationMessage,r.error_message as errorMessage FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id ${where} ORDER BY r.started_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset) as any[]; const items = rows.map(row => { let databases: string[] = []; try { databases = JSON.parse(String(row.databaseNames || '[]')); } catch {} return { ...row, databases }; }); const stats = this.store.db.prepare(`SELECT SUM(CASE WHEN r.status='success' THEN 1 ELSE 0 END) as successTotal,SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END) as failedTotal FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id ${where}`).get(...params) as any; return this.pageResult(items, total, page, pageSize, { successTotal: Number(stats?.successTotal || 0), failedTotal: Number(stats?.failedTotal || 0) });
+    const { page, pageSize, offset, search } = this.pageOptions(input); const status = ['success', 'failed', 'running'].includes(String(input.status)) ? String(input.status) : ''; const conditions: string[] = []; const params: any[] = []; if (status) { conditions.push('r.status=?'); params.push(status); } if (search) { conditions.push(`LOWER(COALESCE(j.name,'') || ' ' || COALESCE(r.filename,'') || ' ' || COALESCE(r.error_message,'')) LIKE ?`); params.push(`%${search}%`); } const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''; const total = Number((this.store.db.prepare(`SELECT COUNT(*) as count FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id ${where}`).get(...params) as any)?.count || 0); const rows = this.store.db.prepare(`SELECT r.id,r.job_id as jobId,j.name as jobName,COALESCE(r.database_connection_id,j.database_connection_id) as databaseConnectionId,COALESCE(r.database_scope,j.database_scope) as databaseScope,COALESCE(r.database_names,j.database_names) as databaseNames,COALESCE(r.storage_target_id,j.storage_target_id) as storageTargetId,s.name as storageTargetName,r.status,r.started_at as startedAt,r.finished_at as finishedAt,r.filename,r.storage_location as storageLocation,r.size_bytes as sizeBytes,r.sha256,r.verification_status as verificationStatus,r.verification_message as verificationMessage,r.error_message as errorMessage FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id LEFT JOIN storage_targets s ON s.id=COALESCE(r.storage_target_id,j.storage_target_id) ${where} ORDER BY r.started_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset) as any[]; const items = rows.map(row => { let databases: string[] = []; try { databases = JSON.parse(String(row.databaseNames || '[]')); } catch {} return { ...row, databases }; }); const stats = this.store.db.prepare(`SELECT SUM(CASE WHEN r.status='success' THEN 1 ELSE 0 END) as successTotal,SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END) as failedTotal FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id ${where}`).get(...params) as any; return this.pageResult(items, total, page, pageSize, { successTotal: Number(stats?.successTotal || 0), failedTotal: Number(stats?.failedTotal || 0) });
   }
 
-  runsForJobPage(jobId: string, input: any = {}) { const { page, pageSize, offset, search } = this.pageOptions(input); const where = search ? `AND LOWER(COALESCE(r.filename,'')) LIKE ?` : ''; const params = search ? [jobId, `%${search}%`] : [jobId]; const total = Number((this.store.db.prepare(`SELECT COUNT(*) as count FROM backup_runs r WHERE r.job_id=? AND r.status='success' AND r.filename IS NOT NULL AND TRIM(r.filename) <> '' ${where}`).get(...params) as any)?.count || 0); const rows = this.store.db.prepare(`SELECT r.id,r.job_id as jobId,j.name as jobName,j.database_connection_id as databaseConnectionId,j.database_scope as databaseScope,j.database_names as databaseNames,s.name as storageTargetName,r.status,r.started_at as startedAt,r.finished_at as finishedAt,r.filename,r.storage_location as storageLocation,r.size_bytes as sizeBytes,r.sha256,r.verification_status as verificationStatus,r.verification_message as verificationMessage,r.error_message as errorMessage FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id JOIN storage_targets s ON s.id=j.storage_target_id WHERE r.job_id=? AND r.status='success' AND r.filename IS NOT NULL AND TRIM(r.filename) <> '' ${where} ORDER BY r.started_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset) as any[]; return this.pageResult(rows.map(row => { let databases: string[] = []; try { databases = JSON.parse(String(row.databaseNames || '[]')); } catch {} return { ...row, databases }; }), total, page, pageSize); }
+  runsForJobPage(jobId: string, input: any = {}) { const { page, pageSize, offset, search } = this.pageOptions(input); const where = search ? `AND LOWER(COALESCE(r.filename,'')) LIKE ?` : ''; const params = search ? [jobId, `%${search}%`] : [jobId]; const total = Number((this.store.db.prepare(`SELECT COUNT(*) as count FROM backup_runs r WHERE r.job_id=? AND r.status='success' AND r.filename IS NOT NULL AND TRIM(r.filename) <> '' ${where}`).get(...params) as any)?.count || 0); const rows = this.store.db.prepare(`SELECT r.id,r.job_id as jobId,j.name as jobName,COALESCE(r.database_connection_id,j.database_connection_id) as databaseConnectionId,COALESCE(r.database_scope,j.database_scope) as databaseScope,COALESCE(r.database_names,j.database_names) as databaseNames,COALESCE(r.storage_target_id,j.storage_target_id) as storageTargetId,s.name as storageTargetName,r.status,r.started_at as startedAt,r.finished_at as finishedAt,r.filename,r.storage_location as storageLocation,r.size_bytes as sizeBytes,r.sha256,r.verification_status as verificationStatus,r.verification_message as verificationMessage,r.error_message as errorMessage FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id LEFT JOIN storage_targets s ON s.id=COALESCE(r.storage_target_id,j.storage_target_id) WHERE r.job_id=? AND r.status='success' AND r.filename IS NOT NULL AND TRIM(r.filename) <> '' ${where} ORDER BY r.started_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset) as any[]; return this.pageResult(rows.map(row => { let databases: string[] = []; try { databases = JSON.parse(String(row.databaseNames || '[]')); } catch {} return { ...row, databases }; }), total, page, pageSize); }
 
   liveProcesses() {
     const expiry = Date.now() - 15 * 60 * 1000;
@@ -139,12 +155,66 @@ export class BackupService {
       throw new BadRequestException(this.nativeClientMessage(error));
     }
   }
+  private jobConnectionLinks(jobId: string, row?: any) {
+    const links = this.store.db.prepare('SELECT connection_id as connectionId,database_names as databaseNames,position FROM backup_job_connections WHERE job_id=? ORDER BY position,connection_id').all(jobId) as any[];
+    if (links.length) return links.map(link => { let databases: string[] = []; try { databases = JSON.parse(String(link.databaseNames || '[]')); } catch {} return { connectionId: String(link.connectionId), databases }; });
+    if (!row?.databaseConnectionId) return [];
+    let databases: string[] = []; try { databases = JSON.parse(String(row.databaseNames || '[]')); } catch {}
+    return [{ connectionId: String(row.databaseConnectionId), databases }];
+  }
+  private jobStorageLinks(jobId: string, row?: any) {
+    const links = this.store.db.prepare('SELECT storage_target_id as storageTargetId,position FROM backup_job_storages WHERE job_id=? ORDER BY position,storage_target_id').all(jobId) as any[];
+    if (links.length) return links.map(link => String(link.storageTargetId));
+    return row?.storageTargetId ? [String(row.storageTargetId)] : [];
+  }
+  private enrichJob(row: any) {
+    const backupLayout = ['database', 'table'].includes(row.backupLayout) ? row.backupLayout : 'single';
+    let databases: string[] = []; try { databases = JSON.parse(String(row.databaseNames || '[]')); } catch {}
+    const connections = this.jobConnectionLinks(String(row.id), row);
+    const storageTargetIds = this.jobStorageLinks(String(row.id), row);
+    return { ...row, databaseScope: row.databaseScope === 'all' ? 'all' : 'selected', backupLayout, backupObjects: this.backupObjects(row.backupObjects, backupLayout), databases, databaseConnectionIds: connections.map(item => item.connectionId), storageTargetIds, databaseSelections: connections.map(item => ({ connectionId: item.connectionId, databases: item.databases })) };
+  }
+  listJobsPageV2(input: any = {}) {
+    const result = this.listJobsPage(input);
+    return { ...result, items: result.items.map((row: any) => this.enrichJob(row)) };
+  }
+  listJobsV2() {
+    return this.listJobs().map((row: any) => this.enrichJob(row));
+  }
+  saveJobV2(body: any) {
+    if (!body.name || !body.cronExpression) throw new BadRequestException('Name and schedule are required');
+    const connectionIds = [...new Set((Array.isArray(body.connectionIds) ? body.connectionIds : [body.databaseConnectionId]).map((value: unknown) => String(value || '').trim()).filter(Boolean))];
+    const storageTargetIds = [...new Set((Array.isArray(body.storageTargetIds) ? body.storageTargetIds : [body.storageTargetId]).map((value: unknown) => String(value || '').trim()).filter(Boolean))];
+    if (!connectionIds.length || !storageTargetIds.length) throw new BadRequestException('Select at least one database connection and storage target');
+    for (const id of connectionIds) if (!this.store.db.prepare('SELECT id FROM database_connections WHERE id=?').get(id)) throw new BadRequestException('One selected database connection no longer exists');
+    for (const id of storageTargetIds) if (!this.store.db.prepare('SELECT id FROM storage_targets WHERE id=?').get(id)) throw new BadRequestException('One selected storage target no longer exists');
+    const databaseScope = body.databaseScope === 'all' ? 'all' : 'selected';
+    const rawSelections = Array.isArray(body.databaseSelections) ? body.databaseSelections : [];
+    const selections = connectionIds.map(connectionId => {
+      const source = rawSelections.find((item: any) => String(item?.connectionId) === connectionId);
+      const databases = [...new Set((Array.isArray(source?.databases) ? source.databases : connectionIds.length === 1 && Array.isArray(body.databases) ? body.databases : []).map((value: unknown) => String(value).trim()).filter(Boolean))];
+      return { connectionId, databases };
+    });
+    if (databaseScope === 'selected' && !selections.some(item => item.databases.length)) throw new BadRequestException('Select at least one database from the grouped connection lists');
+    const databases = [...new Set(selections.flatMap(item => item.databases))];
+    const backupLayout = ['database', 'table'].includes(body.backupLayout) ? body.backupLayout : 'single';
+    const backupObjects = this.backupObjects(body.backupObjects, backupLayout);
+    const timezone = body.timezone || 'UTC'; nextCron(body.cronExpression, new Date(), timezone);
+    const id = body.id || crypto.randomUUID(); const prefix = safeFilePart(body.filenamePrefix || body.name); const next = nextCron(body.cronExpression, new Date(), timezone).toISOString();
+    const encryption = body.backupEncryption === 'aes-256-gcm' ? 'aes-256-gcm' : 'none'; const requestedCompression = ['none', 'gzip', 'zip'].includes(body.compression) ? body.compression : 'gzip'; const compression = backupLayout === 'single' ? requestedCompression : 'zip';
+    const retryCount = Math.max(0, Math.min(10, Number(body.retryCount || 0))); const retryDelaySeconds = Math.max(30, Math.min(86400, Number(body.retryDelaySeconds || 300))); const overlapPolicy = body.overlapPolicy === 'queue' ? 'queue' : 'skip';
+    this.store.db.prepare(`INSERT INTO backup_jobs (id,name,database_connection_id,storage_target_id,database_scope,database_names,backup_layout,backup_objects,cron_expression,timezone,enabled,compression,backup_encryption,retention_count,retry_count,retry_delay_seconds,overlap_policy,filename_prefix,next_run_at,last_run_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,database_connection_id=excluded.database_connection_id,storage_target_id=excluded.storage_target_id,database_scope=excluded.database_scope,database_names=excluded.database_names,backup_layout=excluded.backup_layout,backup_objects=excluded.backup_objects,cron_expression=excluded.cron_expression,timezone=excluded.timezone,enabled=excluded.enabled,compression=excluded.compression,backup_encryption=excluded.backup_encryption,retention_count=excluded.retention_count,retry_count=excluded.retry_count,retry_delay_seconds=excluded.retry_delay_seconds,overlap_policy=excluded.overlap_policy,filename_prefix=excluded.filename_prefix,next_run_at=excluded.next_run_at`).run(id, body.name, connectionIds[0], storageTargetIds[0], databaseScope, JSON.stringify(databases), backupLayout, JSON.stringify(backupObjects), body.cronExpression, timezone, body.enabled === false ? 0 : 1, compression, encryption, Math.max(1, Math.min(365, Number(body.retentionCount || 7))), retryCount, retryDelaySeconds, overlapPolicy, prefix, next, body.lastRunAt || null, this.store.now());
+    this.store.db.prepare('DELETE FROM backup_job_connections WHERE job_id=?').run(id); this.store.db.prepare('DELETE FROM backup_job_storages WHERE job_id=?').run(id);
+    selections.forEach((item, position) => this.store.db.prepare('INSERT INTO backup_job_connections (job_id,connection_id,database_names,position) VALUES (?,?,?,?)').run(id, item.connectionId, JSON.stringify(item.databases), position));
+    storageTargetIds.forEach((targetId, position) => this.store.db.prepare('INSERT INTO backup_job_storages (job_id,storage_target_id,position) VALUES (?,?,?)').run(id, targetId, position));
+    return this.listJobsV2().find((item: any) => item.id === id);
+  }
    listJobs() { const rows = this.store.db.prepare('SELECT id,name,database_connection_id as databaseConnectionId,storage_target_id as storageTargetId,database_scope as databaseScope,database_names as databaseNames,backup_layout as backupLayout,backup_objects as backupObjects,cron_expression as cronExpression,timezone,enabled,compression,backup_encryption as backupEncryption,retention_count as retentionCount,retry_count as retryCount,retry_delay_seconds as retryDelaySeconds,overlap_policy as overlapPolicy,filename_prefix as filenamePrefix,next_run_at as nextRunAt,last_run_at as lastRunAt,created_at as createdAt FROM backup_jobs ORDER BY name').all() as any[]; return rows.map(row => { let databases: string[] = []; try { databases = JSON.parse(String(row.databaseNames || '[]')); } catch {} const backupLayout = ['database', 'table'].includes(row.backupLayout) ? row.backupLayout : 'single'; return { ...row, databaseScope: row.databaseScope === 'all' ? 'all' : 'selected', backupLayout, backupObjects: this.backupObjects(row.backupObjects, backupLayout), databases }; }); }
    saveJob(body: any) { if (!body.name || !body.databaseConnectionId || !body.storageTargetId || !body.cronExpression) throw new BadRequestException('Name, database, storage, and schedule are required'); const databaseScope = body.databaseScope === 'all' ? 'all' : 'selected'; const rawDatabases = Array.isArray(body.databases) ? body.databases : String(body.databases ?? '').split(/[\n,]/); const databases = [...new Set(rawDatabases.map((value: unknown) => String(value).trim()).filter(Boolean))]; if (databaseScope === 'selected' && !databases.length) throw new BadRequestException('Select at least one database'); const backupLayout = ['database', 'table'].includes(body.backupLayout) ? body.backupLayout : 'single'; const backupObjects = this.backupObjects(body.backupObjects, backupLayout); const timezone = body.timezone || 'UTC'; nextCron(body.cronExpression, new Date(), timezone); const id = body.id || crypto.randomUUID(); const prefix = safeFilePart(body.filenamePrefix || body.name); const next = nextCron(body.cronExpression, new Date(), timezone).toISOString(); const encryption = body.backupEncryption === 'aes-256-gcm' ? 'aes-256-gcm' : 'none'; const requestedCompression = ['none', 'gzip', 'zip'].includes(body.compression) ? body.compression : 'gzip'; const compression = backupLayout === 'single' ? requestedCompression : 'zip'; const retryCount = Math.max(0, Math.min(10, Number(body.retryCount || 0))); const retryDelaySeconds = Math.max(30, Math.min(86400, Number(body.retryDelaySeconds || 300))); const overlapPolicy = body.overlapPolicy === 'queue' ? 'queue' : 'skip'; this.store.db.prepare(`INSERT INTO backup_jobs (id,name,database_connection_id,storage_target_id,database_scope,database_names,backup_layout,backup_objects,cron_expression,timezone,enabled,compression,backup_encryption,retention_count,retry_count,retry_delay_seconds,overlap_policy,filename_prefix,next_run_at,last_run_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,database_connection_id=excluded.database_connection_id,storage_target_id=excluded.storage_target_id,database_scope=excluded.database_scope,database_names=excluded.database_names,backup_layout=excluded.backup_layout,backup_objects=excluded.backup_objects,cron_expression=excluded.cron_expression,timezone=excluded.timezone,enabled=excluded.enabled,compression=excluded.compression,backup_encryption=excluded.backup_encryption,retention_count=excluded.retention_count,retry_count=excluded.retry_count,retry_delay_seconds=excluded.retry_delay_seconds,overlap_policy=excluded.overlap_policy,filename_prefix=excluded.filename_prefix,next_run_at=excluded.next_run_at`).run(id, body.name, body.databaseConnectionId, body.storageTargetId, databaseScope, JSON.stringify(databases), backupLayout, JSON.stringify(backupObjects), body.cronExpression, timezone, body.enabled === false ? 0 : 1, compression, encryption, Math.max(1, Math.min(365, Number(body.retentionCount || 7))), retryCount, retryDelaySeconds, overlapPolicy, prefix, next, body.lastRunAt || null, this.store.now()); return this.listJobs().find((x: any) => x.id === id); }
-  deleteJob(id: string) { this.store.db.prepare('DELETE FROM backup_jobs WHERE id = ?').run(id); return { ok: true }; }
+  deleteJob(id: string) { this.store.db.prepare('DELETE FROM backup_job_connections WHERE job_id=?').run(id); this.store.db.prepare('DELETE FROM backup_job_storages WHERE job_id=?').run(id); this.store.db.prepare('DELETE FROM backup_jobs WHERE id = ?').run(id); return { ok: true }; }
    runs(filters: { status?: string; search?: string } = {}) { const where = filters.status && ['success','failed','running'].includes(filters.status) ? 'WHERE r.status=?' : ''; const params = where ? [filters.status] : []; const rows = this.store.db.prepare(`SELECT r.id,r.job_id as jobId,j.name as jobName,r.status,r.started_at as startedAt,r.finished_at as finishedAt,r.filename,r.size_bytes as sizeBytes,r.sha256,r.verification_status as verificationStatus,r.verification_message as verificationMessage,r.error_message as errorMessage FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id ${where} ORDER BY r.started_at DESC LIMIT 100`).all(...params); return filters.search ? rows.filter((row: any) => `${row.jobName} ${row.filename || ''}`.toLowerCase().includes(filters.search!.toLowerCase())) : rows; }
    runsForJob(jobId: string) { return this.store.db.prepare('SELECT r.id,r.job_id as jobId,j.name as jobName,s.name as storageTargetName,r.status,r.started_at as startedAt,r.finished_at as finishedAt,r.filename,r.size_bytes as sizeBytes,r.sha256,r.verification_status as verificationStatus,r.verification_message as verificationMessage,r.error_message as errorMessage FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id JOIN storage_targets s ON s.id=j.storage_target_id WHERE r.job_id=? ORDER BY r.started_at DESC LIMIT 100').all(jobId); }
-   async runDue() { const jobs = this.store.db.prepare('SELECT * FROM backup_jobs WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at').all(this.store.now()) as any[]; for (const job of jobs) { if (this.running.has(job.id)) { if (job.overlap_policy === 'queue') { this.queued.add(job.id); this.logger.warn(`Backup ${job.id} is already running; overlap queued by schedule policy`); } else void this.system.notifyOnce('backup_failed', `overlap:${job.id}`, `VaultBack skipped overlapping backup: ${job.name || job.id}`); continue; } this.store.db.prepare('UPDATE backup_jobs SET next_run_at=? WHERE id=?').run(nextCron(job.cron_expression, new Date(), job.timezone || 'UTC').toISOString(), job.id); void this.run(job.id).catch(error => this.logger.error(`Scheduled backup ${job.id} failed: ${error.message}`)); } }
+   async runDue() { const jobs = this.store.db.prepare('SELECT * FROM backup_jobs WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at').all(this.store.now()) as any[]; for (const job of jobs) { if (this.running.has(job.id)) { if (job.overlap_policy === 'queue') { this.queued.add(job.id); this.logger.warn(`Backup ${job.id} is already running; overlap queued by schedule policy`); } else void this.system.notifyOnce('backup_failed', `overlap:${job.id}`, `VaultBack skipped overlapping backup: ${job.name || job.id}`); continue; } this.store.db.prepare('UPDATE backup_jobs SET next_run_at=? WHERE id=?').run(nextCron(job.cron_expression, new Date(), job.timezone || 'UTC').toISOString(), job.id); void this.run(job.id).catch((error: any) => this.logger.error(`Scheduled backup ${job.id} failed: ${error.message}`)); } }
    async runNow(id: string) { if (this.running.has(id)) throw new BadRequestException('This backup is already running'); return this.run(id); }
    async monitorHealth() {
      const staleHours = Math.max(1, Number.parseInt(String(process.env.BACKUP_STALE_AFTER_HOURS || '26'), 10) || 26);
@@ -170,9 +240,63 @@ export class BackupService {
     this.realtime.publishThrottled('processes', this.liveProcesses(), 120);
   }
 
+  private downloadPreparationStatus(job: DownloadPreparation) {
+    return { id: job.id, runId: job.runId, filename: job.filename, state: job.state, percent: job.percent, stage: job.stage, message: job.message, error: job.error || '' };
+  }
+  private publishDownloadPreparation(job: DownloadPreparation) { this.realtime.publishToUser('downloads', job.userId, this.downloadPreparationStatus(job)); }
+  private updateDownloadPreparation(job: DownloadPreparation, update: Partial<DownloadPreparation>) { Object.assign(job, update, { updatedAt: Date.now() }); this.publishDownloadPreparation(job); }
+  startDownloadPreparation(runId: string, userId: string) {
+    this.store.assertEncryptionHealthy();
+    const row = this.store.db.prepare('SELECT r.id,r.status,r.filename,r.storage_location as storageLocation,r.storage_folder as storageFolder,COALESCE(r.storage_target_id,j.storage_target_id) as storageTargetId FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id WHERE r.id=?').get(runId) as any;
+    if (!row) throw new BadRequestException('Backup run not found');
+    if (row.status !== 'success' || !row.filename) throw new BadRequestException('Only completed backups can be downloaded');
+    const id = crypto.randomUUID();
+    const job: DownloadPreparation = { id, userId, runId, filename: String(row.filename), state: 'preparing', percent: 0, stage: 'checking', message: 'Checking backup availability', updatedAt: Date.now() };
+    this.downloadPreparations.set(id, job);
+    this.publishDownloadPreparation(job);
+    void this.prepareDownload(job, row);
+    return this.downloadPreparationStatus(job);
+  }
+  getDownloadPreparation(id: string, userId: string) {
+    const job = this.downloadPreparations.get(id);
+    if (!job || job.userId !== userId) throw new BadRequestException('Download preparation not found or expired');
+    return this.downloadPreparationStatus(job);
+  }
+  takePreparedDownload(id: string, userId: string) {
+    const job = this.downloadPreparations.get(id);
+    if (!job || job.userId !== userId) throw new BadRequestException('Download preparation not found or expired');
+    if (job.state !== 'ready' || !job.path) throw new BadRequestException('Backup download is not ready');
+    if (job.cleanupTimer) clearTimeout(job.cleanupTimer);
+    this.downloadPreparations.delete(id);
+    return { filename: job.filename, path: job.path, cleanup: Boolean(job.cleanup) };
+  }
+  private async prepareDownload(job: DownloadPreparation, row: any) {
+    try {
+      this.updateDownloadPreparation(job, { percent: 12, stage: 'connecting', message: 'Connecting to backup storage' });
+      const target = this.storage.get(String(row.storageTargetId));
+      const progress: StorageDownloadProgress = ({ bytesDownloaded, totalBytes }) => {
+        const percent = totalBytes ? Math.min(92, 20 + Math.round((Math.min(bytesDownloaded, totalBytes) / totalBytes) * 72)) : Math.min(90, Math.max(job.percent, 20 + Math.min(70, Math.floor(bytesDownloaded / (1024 * 1024)) + 1)));
+        this.updateDownloadPreparation(job, { percent, stage: 'downloading', message: totalBytes ? `Downloading backup · ${percent}%` : 'Downloading backup' });
+      };
+      this.updateDownloadPreparation(job, { percent: 20, stage: 'downloading', message: 'Downloading backup' });
+      const file = await this.storage.download(target, String(row.filename), row.storageLocation ? String(row.storageLocation) : undefined, row.storageFolder ? String(row.storageFolder) : '', progress);
+      this.updateDownloadPreparation(job, { percent: 96, stage: 'finalizing', message: 'Finalizing download' });
+      job.path = file.path; job.cleanup = file.cleanup;
+      this.updateDownloadPreparation(job, { state: 'ready', percent: 100, stage: 'ready', message: 'Ready to download' });
+      job.cleanupTimer = setTimeout(() => {
+        const current = this.downloadPreparations.get(job.id);
+        if (current !== job) return;
+        if (job.cleanup && job.path) { try { fs.rmSync(job.path, { force: true }); fs.rmSync(path.dirname(job.path), { recursive: true, force: true }); } catch {} }
+        this.downloadPreparations.delete(job.id);
+      }, 10 * 60 * 1000);
+      job.cleanupTimer.unref?.();
+    } catch (error: any) {
+      this.updateDownloadPreparation(job, { state: 'failed', stage: 'failed', percent: Math.min(job.percent, 99), message: 'Download preparation failed', error: String(error?.message || error).slice(0, 500) });
+    }
+  }
   async downloadRun(runId: string) {
     this.store.assertEncryptionHealthy();
-    const row = this.store.db.prepare('SELECT r.id,r.status,r.filename,r.storage_location as storageLocation,r.storage_folder as storageFolder,j.storage_target_id as storageTargetId FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id WHERE r.id=?').get(runId) as any;
+    const row = this.store.db.prepare('SELECT r.id,r.status,r.filename,r.storage_location as storageLocation,r.storage_folder as storageFolder,COALESCE(r.storage_target_id,j.storage_target_id) as storageTargetId FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id WHERE r.id=?').get(runId) as any;
     if (!row) throw new BadRequestException('Backup run not found');
     if (row.status !== 'success' || !row.filename) throw new BadRequestException('Only completed backups can be downloaded');
     const file = await this.storage.download(this.storage.get(String(row.storageTargetId)), String(row.filename), row.storageLocation ? String(row.storageLocation) : undefined, row.storageFolder ? String(row.storageFolder) : '');
@@ -181,7 +305,7 @@ export class BackupService {
 
   async restoreRun(runId: string, input: any = {}) {
     this.store.assertEncryptionHealthy();
-    const row = this.store.db.prepare('SELECT r.id,r.status,r.filename,r.storage_location as storageLocation,r.storage_folder as storageFolder,j.name as jobName,j.database_connection_id as sourceConnectionId,j.database_scope as databaseScope,j.database_names as databaseNames,j.backup_layout as backupLayout,j.storage_target_id as storageTargetId,j.compression,j.backup_encryption as backupEncryption FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id WHERE r.id=?').get(runId) as any;
+    const row = this.store.db.prepare('SELECT r.id,r.status,r.filename,r.storage_location as storageLocation,r.storage_folder as storageFolder,j.name as jobName,COALESCE(r.database_connection_id,j.database_connection_id) as sourceConnectionId,COALESCE(r.database_scope,j.database_scope) as databaseScope,COALESCE(r.database_names,j.database_names) as databaseNames,j.backup_layout as backupLayout,COALESCE(r.storage_target_id,j.storage_target_id) as storageTargetId,j.compression,j.backup_encryption as backupEncryption FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id WHERE r.id=?').get(runId) as any;
     if (!row) throw new BadRequestException('Backup run not found');
     if (row.status !== 'success' || !row.filename) throw new BadRequestException('Only completed backups can be restored');
     const mode = input.mode === 'new' ? 'new' : 'overwrite';
@@ -218,11 +342,37 @@ export class BackupService {
     }
   }
 
-  private async run(jobId: string, attempt = 0) {
+  private async runConfiguredJob(jobId: string, attempt = 0): Promise<any> {
+    const job = this.store.db.prepare('SELECT * FROM backup_jobs WHERE id=?').get(jobId) as any;
+    const connections = this.jobConnectionLinks(jobId, job);
+    const storageTargetIds = this.jobStorageLinks(jobId, job);
+    if (connections.length <= 1 && storageTargetIds.length <= 1) return this.run(jobId, attempt);
+    let lastError: any = null;
+    let completed = 0;
+    for (const connection of connections) {
+      for (const storageTargetId of storageTargetIds) {
+        try {
+          await this.run(jobId, attempt, connection.connectionId, storageTargetId, job.database_scope === 'all' ? undefined : connection.databases);
+          completed += 1;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+    }
+    if (!completed && lastError) throw lastError;
+    return { ok: true, completed, failed: lastError ? 1 : 0 };
+  }
+
+  private async run(jobId: string, attempt = 0, connectionIdOverride?: string, storageTargetIdOverride?: string, databasesOverride?: string[]): Promise<any> {
+    if (!connectionIdOverride && !storageTargetIdOverride && !databasesOverride) {
+      const configured = this.store.db.prepare('SELECT COUNT(*) as count FROM backup_job_connections WHERE job_id=?').get(jobId) as any;
+      const configuredStorages = this.store.db.prepare('SELECT COUNT(*) as count FROM backup_job_storages WHERE job_id=?').get(jobId) as any;
+      if (Number(configured?.count || 0) > 1 || Number(configuredStorages?.count || 0) > 1) return this.runConfiguredJob(jobId, attempt);
+    }
     this.running.add(jobId); const runId = crypto.randomUUID(); const started = this.store.now(); const previous = this.store.db.prepare("SELECT attempt FROM backup_runs WHERE job_id=? AND status='retrying' ORDER BY started_at DESC LIMIT 1").get(jobId) as any; const runAttempt = attempt || Number(previous?.attempt || 0) + 1; this.store.db.prepare('INSERT INTO backup_runs (id,job_id,status,started_at,attempt) VALUES (?,?,?,?,?)').run(runId, jobId, 'running', started, runAttempt);
     const job = this.store.db.prepare('SELECT * FROM backup_jobs WHERE id=?').get(jobId) as any; const startedProcess = this.store.now(); this.liveProcessState.set(runId, { id: runId, jobId, jobName: String(job?.name || jobId), status: 'running', stage: 'preparing', startedAt: startedProcess, updatedAt: startedProcess, logs: [] }); this.addProcessLog(runId, `Backup started for ${job?.name || jobId}`); let tempDir = '';
     try {
-      const connection = this.getConnection(job.database_connection_id); const databaseScope: 'all' | 'selected' = job.database_scope === 'all' ? 'all' : 'selected'; const backupLayout = ['database', 'table'].includes(job.backup_layout) ? job.backup_layout : 'single'; const backupObjects = this.backupObjects(job.backup_objects, backupLayout); let databases: string[] = []; try { databases = JSON.parse(String(job.database_names || '[]')); } catch {} if (databaseScope === 'selected' && !databases.length) databases = connection.databases; if (backupLayout !== 'single' && databaseScope === 'all') databases = (await this.listAvailableDatabases(connection.id)).databases; if (databaseScope === 'selected' && !databases.length) throw new Error('No databases selected for this schedule'); const backupConnection: DatabaseConnection = { ...connection, databaseScope, databases, database: databaseScope === 'all' ? '*' : databases[0] || '' }; const target = this.storage.get(job.storage_target_id); tempDir = fs.mkdtempSync(path.join(this.store.dataDir, 'tmp', 'run-')); const databaseLabel = backupConnection.databaseScope === 'all' ? 'all-databases' : backupConnection.databases.join('-'); const raw = path.join(tempDir, `${safeFilePart(databaseLabel || backupConnection.database)}-${Date.now()}.sql`); const compression = backupLayout === 'single' && ['none', 'gzip', 'zip'].includes(job.compression) ? job.compression : backupLayout === 'single' ? 'gzip' : 'zip'; let artifact = raw;
+      const connection = this.getConnection(connectionIdOverride || job.database_connection_id); const databaseScope: 'all' | 'selected' = job.database_scope === 'all' ? 'all' : 'selected'; const backupLayout = ['database', 'table'].includes(job.backup_layout) ? job.backup_layout : 'single'; const backupObjects = this.backupObjects(job.backup_objects, backupLayout); let databases: string[] = databasesOverride || []; if (!databasesOverride) { try { databases = JSON.parse(String(job.database_names || '[]')); } catch {} } if (databaseScope === 'selected' && !databases.length) databases = connection.databases; if (backupLayout !== 'single' && databaseScope === 'all') databases = (await this.listAvailableDatabases(connection.id)).databases; if (databaseScope === 'selected' && !databases.length) throw new Error('No databases selected for this schedule'); const backupConnection: DatabaseConnection = { ...connection, databaseScope, databases, database: databaseScope === 'all' ? '*' : databases[0] || '' }; const target = this.storage.get(storageTargetIdOverride || job.storage_target_id); this.store.db.prepare('UPDATE backup_runs SET storage_target_id=?,database_connection_id=?,database_names=?,database_scope=? WHERE id=?').run(target.id, connection.id, JSON.stringify(databases), databaseScope, runId); tempDir = fs.mkdtempSync(path.join(this.store.dataDir, 'tmp', 'run-')); const databaseLabel = backupConnection.databaseScope === 'all' ? 'all-databases' : backupConnection.databases.join('-'); const raw = path.join(tempDir, `${safeFilePart(databaseLabel || backupConnection.database)}-${Date.now()}.sql`); const compression = backupLayout === 'single' && ['none', 'gzip', 'zip'].includes(job.compression) ? job.compression : backupLayout === 'single' ? 'gzip' : 'zip'; let artifact = raw;
       this.setProcessStage(runId, 'dumping'); this.addProcessLog(runId, `Dumping ${backupLayout === 'single' ? (databaseScope === 'all' ? 'all visible databases' : `${databases.length} selected database(s)`) : backupLayout === 'database' ? `${databases.length} database file(s)` : 'one SQL file per table'}`);
       if (backupLayout === 'single') { await this.dump(backupConnection, raw, runId); if (compression === 'gzip') { this.setProcessStage(runId, 'compressing'); this.addProcessLog(runId, 'Compressing SQL archive'); artifact = `${raw}.gz`; await pipeline(fs.createReadStream(raw), createGzip({ level: 6 }), fs.createWriteStream(artifact)); fs.rmSync(raw); } else if (compression === 'zip') { this.setProcessStage(runId, 'compressing'); this.addProcessLog(runId, 'Creating ZIP archive'); artifact = `${raw}.zip`; await this.writeZip([{ name: 'backup.sql', path: raw }], artifact); fs.rmSync(raw); } } else { const entries: Array<{ name: string; path: string }> = []; if (backupLayout === 'database') { for (const database of databases) { const output = path.join(tempDir, `${safeFilePart(database)}.sql`); await this.dumpDatabase(backupConnection, database, output, runId); entries.push({ name: `${safeFilePart(database)}/${safeFilePart(database)}.sql`, path: output }); } } else { for (const database of databases) { const available = await this.listAvailableTables(connection, database); const tables = available.tables; const databasePart = safeFilePart(database); if (available.views.length && !backupObjects.views) this.addProcessLog(runId, `Skipping ${available.views.length} view(s) in ${database} because view backup is disabled`); if (!backupObjects.triggers) this.addProcessLog(runId, `Skipping table triggers in ${database} because trigger backup is disabled`); if (!tables.length) this.addProcessLog(runId, `No base tables found in ${database}`); for (const table of tables) { const tablePart = safeFilePart(table); const output = path.join(tempDir, `${databasePart}-${tablePart}.sql`); await this.dumpTable(backupConnection, database, table, output, runId, backupObjects.triggers); entries.push({ name: `${databasePart}/${tablePart}.sql`, path: output }); } if (backupObjects.views || backupObjects.routines || backupObjects.events) { const objectsOutput = path.join(tempDir, `${databasePart}-objects.sql`); await this.dumpDatabaseObjects(backupConnection, database, available, backupObjects, objectsOutput, runId); if (this.containsDatabaseObjectSql(objectsOutput)) { entries.push({ name: `${databasePart}/_database-objects.sql`, path: objectsOutput }); this.addProcessLog(runId, `Included database objects for ${database}`); } else { fs.rmSync(objectsOutput, { force: true }); } } } } if (!entries.length) throw new Error('No databases or tables were available for the selected backup scope'); this.setProcessStage(runId, 'compressing'); this.addProcessLog(runId, `Creating ZIP archive with ${entries.length} SQL file(s)`); artifact = path.join(tempDir, `${safeFilePart(databaseLabel)}.zip`); await this.writeZip(entries, artifact); }
       if (job.backup_encryption === 'aes-256-gcm') { this.setProcessStage(runId, 'encrypting'); this.addProcessLog(runId, 'Encrypting backup archive'); const encrypted = `${artifact}.enc`; await this.encryptFile(artifact, encrypted); fs.rmSync(artifact); artifact = encrypted; }

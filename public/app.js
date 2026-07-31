@@ -6,6 +6,7 @@ let realtimeSource = null;
 var vaultbackCollectionEndpoints = { connections: '/api/connections', storage: '/api/storage', jobs: '/api/jobs', runs: '/api/runs', users: '/api/auth/users' };
 var vaultbackSearchTimers = {};
 var vaultbackJobRunPages = {};
+var vaultbackDownloadWaiters = {};
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 document.addEventListener('click', event => {
@@ -171,7 +172,7 @@ function realtimeJson(event) {
 function connectRealtime() {
   if (!state.csrf || !window.EventSource) return;
   closeRealtime();
-  const topics = 'processes,backup_runs,sessions,rate_limit,updates,storage_health';
+  const topics = 'processes,backup_runs,sessions,rate_limit,updates,storage_health,downloads';
   const sessionsOptions = state.list.sessions || { page: 1, pageSize: 25 };
   const usageOptions = state.list.apiUsage || { page: 1, pageSize: 25 };
   const query = new URLSearchParams({ topics, sessionPage: String(sessionsOptions.page || 1), sessionPageSize: String(sessionsOptions.pageSize || 25), ratePage: String(usageOptions.page || 1), ratePageSize: String(usageOptions.pageSize || 25) });
@@ -218,6 +219,11 @@ function connectRealtime() {
     if (!['dashboard', 'jobs', 'runs'].includes(state.currentView)) return;
     void loadCollection('runs').then(() => { renderRuns(); renderDashboard(); });
   });
+  source.addEventListener('downloads', event => {
+    const payload = realtimeJson(event);
+    const waiter = payload?.id ? vaultbackDownloadWaiters[payload.id] : null;
+    if (waiter) waiter(payload);
+  });
   source.onerror = () => {
     // EventSource performs its own bounded reconnect loop. Do not show a toast
     // for transient proxy/network interruptions or create fallback polling.
@@ -226,11 +232,27 @@ function connectRealtime() {
 
 async function downloadRunArtifact(button, id) {
   if (!button || button.disabled) return;
-  const original = button.textContent || 'Download';
+  const original = button.innerHTML || 'Download';
   button.disabled = true;
-  button.textContent = 'Preparing…';
+  const showDownloadProgress = (status, label = 'Preparing') => {
+    const percent = Math.max(0, Math.min(100, Number(status?.percent || 0)));
+    button.innerHTML = `<span class="button-spinner" aria-hidden="true"></span><span>${esc(label)} · ${percent}%</span>`;
+    button.setAttribute('aria-label', `${label} ${percent}%`);
+  };
+  const waitForDownloadPreparation = status => new Promise((resolve, reject) => {
+    let finished = false;
+    let fallbackTimer;
+    const finish = (error, value) => { if (finished) return; finished = true; clearInterval(fallbackTimer); delete vaultbackDownloadWaiters[status.id]; error ? reject(error) : resolve(value); };
+    const handle = next => { showDownloadProgress(next); if (next.state === 'ready') finish(null, next); else if (next.state === 'failed') finish(new Error(next.error || next.message || 'Backup download preparation failed')); };
+    vaultbackDownloadWaiters[status.id] = handle;
+    fallbackTimer = setInterval(async () => { try { handle(await api(`/api/downloads/${encodeURIComponent(status.id)}/status`)); } catch (error) { finish(error); } }, 2000);
+    handle(status);
+  });
   try {
-    const response = await fetch(`/api/runs/${encodeURIComponent(id)}/download`, { credentials: 'same-origin' });
+    let preparation = await api(`/api/runs/${encodeURIComponent(id)}/download/prepare`, { method: 'POST', body: JSON.stringify({}) });
+    if (preparation.state !== 'ready') preparation = await waitForDownloadPreparation(preparation);
+    showDownloadProgress(preparation, 'Starting');
+    const response = await fetch(`/api/downloads/${encodeURIComponent(preparation.id)}/file`, { credentials: 'same-origin' });
     if (!response.ok) {
       let message = 'Backup download failed';
       try { const data = await response.json(); message = data.message || message; } catch {}
@@ -249,7 +271,8 @@ async function downloadRunArtifact(button, id) {
     toast(error.message || 'Backup download failed', true);
   } finally {
     button.disabled = false;
-    button.textContent = original;
+    button.innerHTML = original;
+    button.removeAttribute('aria-label');
   }
 }
 
@@ -267,7 +290,7 @@ document.addEventListener('click', event => {
 
 
 
-function renderJobDatabaseScope(el, available, selected, scope){const host=el.querySelector('#job-database-scope');const chosen=new Set(selected);host.innerHTML=`<label>Backup scope</label><select name="databaseScope"><option value="selected" ${scope==='selected'?'selected':''}>Selected databases</option><option value="all" ${scope==='all'?'selected':''}>All databases</option></select><div id="job-database-checklist" class="database-checklist-host"></div>`;const draw=()=>{const all=host.querySelector('[name=databaseScope]').value==='all';const checklist=all?'<div class="callout">Every database visible to this account will be backed up.</div>':available.length?`<div class="database-checklist">${available.map(name=>`<label class="database-check-item"><input type="checkbox" name="databases" value="${esc(name)}" ${chosen.has(name)?'checked':''}> <span>${esc(name)}</span></label>`).join('')}</div>`:'<div class="callout">No databases were returned for this connection.</div>';host.querySelector('#job-database-checklist').innerHTML=checklist};host.querySelector('[name=databaseScope]').onchange=draw;draw()}
+function renderJobDatabaseScope(el, groups, selections, scope){const host=el.querySelector('#job-database-scope');const chosen=new Map((selections||[]).map(item=>[String(item.connectionId),new Set(item.databases||[])]));host.innerHTML=`<label for="job-database-scope-select">Backup scope</label><select id="job-database-scope-select" name="databaseScope"><option value="selected" ${scope==='selected'?'selected':''}>Selected databases</option><option value="all" ${scope==='all'?'selected':''}>All databases from selected connections</option></select><div id="job-database-checklist" class="database-checklist-host"></div>`;const draw=()=>{host.querySelectorAll('input[name="databases"]').forEach(input=>{const set=chosen.get(input.dataset.connectionId)||new Set();if(input.checked)set.add(input.value);else set.delete(input.value);chosen.set(input.dataset.connectionId,set)});const all=host.querySelector('[name=databaseScope]').value==='all';const search=String(host.querySelector('[name=databaseSearch]')?.value||'').trim().toLowerCase();const filtered=groups.map(group=>({...group,databases:group.databases.filter(name=>!search||`${group.name} ${name}`.toLowerCase().includes(search))})).filter(group=>group.databases.length);const checklist=all?'<div class="callout">Every database visible to each selected connection will be backed up.</div>':groups.length?`<input class="database-search" name="databaseSearch" type="search" placeholder="Search connection or database" value="${esc(search)}" autocomplete="off" /><div class="database-checklist grouped-database-checklist">${filtered.length?filtered.map(group=>`<fieldset class="database-group"><legend>${esc(group.name)} <small>${group.databases.length}</small></legend>${group.databases.map(name=>`<label class="database-check-item"><input type="checkbox" name="databases" data-connection-id="${esc(group.connectionId)}" value="${esc(name)}" ${chosen.get(group.connectionId)?.has(name)?'checked':''}> <span>${esc(name)}</span></label>`).join('')}</fieldset>`).join(''):'<div class="empty">No databases match this search.</div>'}</div>`:'<div class="callout">Select at least one database connection first.</div>';host.querySelector('#job-database-checklist').innerHTML=checklist;host.querySelector('[name=databaseSearch]')?.addEventListener('input',draw)};host.querySelector('[name=databaseScope]').onchange=draw;draw()}
 function renderJobObjectOptions(el, layout, selected = {}) { const host = el.querySelector('#job-object-options'); if (!host) return; const tableLayout = layout === 'table'; const values = { views: tableLayout ? false : true, routines: tableLayout ? false : true, triggers: true, events: tableLayout ? false : true, ...selected }; host.innerHTML = `<label>Database objects</label><div class="backup-object-options"><label class="backup-object-option"><input type="checkbox" name="backupObjectViews" ${values.views ? 'checked' : ''} ${tableLayout ? '' : 'disabled'}><span><b>Views</b><small>${tableLayout ? 'Add view definitions to a separate database objects file.' : 'Included automatically in this layout.'}</small></span></label><label class="backup-object-option"><input type="checkbox" name="backupObjectRoutines" ${values.routines ? 'checked' : ''} ${tableLayout ? '' : 'disabled'}><span><b>Stored procedures and functions</b><small>${tableLayout ? 'Add routines to the database objects file.' : 'Included automatically in this layout.'}</small></span></label><label class="backup-object-option"><input type="checkbox" name="backupObjectTriggers" ${values.triggers ? 'checked' : ''} ${tableLayout ? '' : 'disabled'}><span><b>Triggers</b><small>${tableLayout ? 'Include triggers with each table SQL file.' : 'Included automatically in this layout.'}</small></span></label><label class="backup-object-option"><input type="checkbox" name="backupObjectEvents" ${values.events ? 'checked' : ''} ${tableLayout ? '' : 'disabled'}><span><b>Scheduled events</b><small>${tableLayout ? 'Add event definitions to the database objects file.' : 'Included automatically in this layout.'}</small></span></label></div><div class="callout">Indexes are included automatically in each table definition. Single-file and per-database layouts already include database objects through the standard dump.</div>`; }
 
 function showConnectionForm(item={}){const el=$('#connection-form');el.classList.remove('hidden');el.innerHTML=formShell(item.id?'Edit database':'Add database',field('Display name','name',item.name)+selectField('Engine','engine',[['mysql','MySQL'],['mariadb','MariaDB']],item.engine||'mysql')+field('Host','host',item.host||'127.0.0.1')+field('Port','port',item.port||3306,'number')+field('Username','username',item.username||'')+field('Password','password','','password',item.id?'placeholder="Leave blank to keep current; empty passwords are supported" autocomplete="new-password"':'placeholder="Optional" autocomplete="new-password"')+`<div class="field"><label>Transport security</label><select name="ssl"><option value="false" ${!item.ssl?'selected':''}>Standard connection</option><option value="true" ${item.ssl?'selected':''}>Require SSL/TLS</option></select></div>`);const form=el.querySelector('.form-shell');const friendlyError=(message)=>message==='Internal server error'?'Could not test connection. Check that the MySQL/MariaDB client is installed and the database is reachable.':message;const readData=()=>{const f=new FormData(form);const data=Object.fromEntries(f);return {id:item.id,...data,port:Number(f.get('port')),ssl:f.get('ssl')==='true'}};const testButton=document.createElement('button');testButton.type='button';testButton.className='secondary';testButton.id='test-connection';testButton.textContent='Test connection';el.querySelector('.form-actions').insertBefore(testButton,el.querySelector('#save-form'));testButton.onclick=async()=>{try{await withButtonBusy(testButton,async()=>{const result=await api('/api/connections/test',{method:'POST',body:JSON.stringify(readData())});if(!result.ok)throw new Error(result.message);toast(result.message||'Database connection successful')},'Testing connection…')}catch(e){toast(friendlyError(e.message),true)}};$('#save-form').onclick=async()=>{const save=$('#save-form');try{await withButtonBusy(save,async()=>{const data=readData();const result=await api('/api/connections/test',{method:'POST',body:JSON.stringify(data)});if(!result.ok)throw new Error(result.message);await api('/api/connections',{method:'POST',body:JSON.stringify(data)});toast(`${result.message}; database saved`);closeForms();await loadAll()},'Saving database…')}catch(e){toast(friendlyError(e.message),true)}}}
@@ -367,10 +390,24 @@ function vaultbackAttachCronGuide(form) {
 function showJobForm(item = {}) {
   const el = $('#job-form');
   el.classList.remove('hidden');
+  const selectedConnectionIds = item.databaseConnectionIds || (item.databaseConnectionId ? [item.databaseConnectionId] : []);
+  const selectedStorageTargetIds = item.storageTargetIds || (item.storageTargetId ? [item.storageTargetId] : []);
+  const renderPicker = (host, items, selected, name, label, searchPlaceholder) => {
+    const selectedSet = new Set(selected.map(String));
+    host.innerHTML = `<label>${esc(label)}</label><input class="multi-select-search" type="search" placeholder="${esc(searchPlaceholder)}" autocomplete="off"><div class="multi-select-list"></div>`;
+    const draw = () => {
+      const query = String(host.querySelector('input[type="search"]')?.value || '').trim().toLowerCase();
+      const visible = items.filter(item => !query || `${item.name} ${item.engine || ''} ${item.type || ''}`.toLowerCase().includes(query));
+      host.querySelector('.multi-select-list').innerHTML = visible.length ? visible.map(item => `<label class="multi-select-item"><input type="checkbox" name="${name}" value="${esc(item.id)}" ${selectedSet.has(String(item.id)) ? 'checked' : ''}><span><b>${esc(item.name)}</b><small>${esc(item.engine || item.type || '')}</small></span></label>`).join('') : '<div class="empty">No matches.</div>';
+    };
+    host.querySelector('input[type="search"]').addEventListener('input', draw);
+    host.addEventListener('change', event => { if (event.target.matches(`input[name="${name}"]`)) { if (event.target.checked) selectedSet.add(event.target.value); else selectedSet.delete(event.target.value); } });
+    draw();
+  };
   el.innerHTML = formShell(item.id ? 'Edit schedule' : 'Create schedule',
     field('Schedule name', 'name', item.name) +
-    selectField('Database connection', 'databaseConnectionId', state.connections.map(x => [x.id, x.name]), item.databaseConnectionId) +
-    selectField('Storage target', 'storageTargetId', state.storage.map(x => [x.id, x.name]), item.storageTargetId) +
+    '<div id="job-connections" class="field full multi-select-field"></div>' +
+    '<div id="job-storages" class="field full multi-select-field"></div>' +
     '<div id="job-database-scope" class="field full"><span class="hint">Loading available databases…</span></div>' +
     vaultbackCronField(item.cronExpression || '0 2 * * *') +
     field('Timezone', 'timezone', item.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone) +
@@ -386,6 +423,9 @@ function showJobForm(item = {}) {
     selectField('Status', 'enabled', [['true', 'Active'], ['false', 'Paused']], item.enabled === false ? 'false' : 'true') +
     '<div class="field full"><span class="hint">Choose all databases or select specific databases from the list returned by the connection.</span></div>'
   );
+
+  renderPicker($('#job-connections'), state.connections, selectedConnectionIds, 'connectionIds', 'Database connections', 'Search connections');
+  renderPicker($('#job-storages'), state.storage, selectedStorageTargetIds, 'storageTargetIds', 'Storage targets', 'Search storage targets');
 
   vaultbackAttachCronGuide(el);
   const layoutSelect = el.querySelector('[name="backupLayout"]');
@@ -404,11 +444,18 @@ function showJobForm(item = {}) {
   layoutSelect?.addEventListener('change', updateLayoutOptions);
   updateLayoutOptions();
   let firstLoad = true;
+  const initialSelections = item.databaseSelections || selectedConnectionIds.map(connectionId => ({ connectionId, databases: item.databases || [] }));
+  const readSelections = () => [...new Set([...el.querySelectorAll('input[name="databases"]:checked')].map(input => input.dataset.connectionId))].map(connectionId => ({ connectionId, databases: [...el.querySelectorAll(`input[name="databases"][data-connection-id="${CSS.escape(connectionId)}"]:checked`)].map(input => input.value) }));
   const loadDatabases = async () => {
-    const id = el.querySelector('[name=databaseConnectionId]').value;
+    const ids = [...el.querySelectorAll('input[name="connectionIds"]:checked')].map(input => input.value);
+    const selections = firstLoad ? initialSelections : readSelections();
     try {
-      const result = await api(`/api/connections/${encodeURIComponent(id)}/databases`);
-      renderJobDatabaseScope(el, result.databases || [], firstLoad ? (item.databases || []) : [], firstLoad ? (item.databaseScope || 'selected') : 'selected');
+      const groups = await Promise.all(ids.map(async id => {
+        const connection = state.connections.find(value => value.id === id);
+        const result = await api(`/api/connections/${encodeURIComponent(id)}/databases`);
+        return { connectionId: id, name: connection?.name || id, databases: result.databases || [] };
+      }));
+      renderJobDatabaseScope(el, groups, selections, firstLoad ? (item.databaseScope || 'selected') : (el.querySelector('[name="databaseScope"]')?.value || 'selected'));
     } catch (e) {
       const detail = e.message === 'Internal server error' ? 'Check that the MySQL/MariaDB client and connection are reachable.' : e.message;
       el.querySelector('#job-database-scope').innerHTML = `<div class="callout">Unable to load databases: ${esc(detail)}</div>`;
@@ -416,7 +463,7 @@ function showJobForm(item = {}) {
       firstLoad = false;
     }
   };
-  el.querySelector('[name=databaseConnectionId]').onchange = loadDatabases;
+  el.querySelector('#job-connections').addEventListener('change', loadDatabases);
   void loadDatabases();
 
   $('#save-form').onclick = async () => {
@@ -426,7 +473,10 @@ function showJobForm(item = {}) {
       const form = el.querySelector('.form-shell');
       const f = new FormData(form);
       const data = Object.fromEntries(f);
-      data.databases = [...form.querySelectorAll('input[name="databases"]:checked')].map(input => input.value);
+      data.connectionIds = [...form.querySelectorAll('input[name="connectionIds"]:checked')].map(input => input.value);
+      data.storageTargetIds = [...form.querySelectorAll('input[name="storageTargetIds"]:checked')].map(input => input.value);
+      data.databaseSelections = readSelections();
+      data.databases = data.databaseSelections.flatMap(item => item.databases);
       data.databaseScope = form.querySelector('[name="databaseScope"]')?.value || 'selected';
       data.backupObjects = { views: Boolean(form.querySelector('[name="backupObjectViews"]')?.checked), routines: Boolean(form.querySelector('[name="backupObjectRoutines"]')?.checked), triggers: Boolean(form.querySelector('[name="backupObjectTriggers"]')?.checked), events: Boolean(form.querySelector('[name="backupObjectEvents"]')?.checked) };
       data.retentionCount = Number(data.retentionCount);
@@ -619,7 +669,7 @@ async function loadCollection(key) { const result = await api(`${vaultbackCollec
 
 function renderConnections() { collectionControls('connections', 'connections-controls', 'Search name, host, user, or database'); const el = $('#connections-list'); const actions = state.role === 'admin' ? c => `<button class="small-button" onclick="editConnection('${c.id}')">Edit</button><button class="small-button danger" onclick="deleteConnection('${c.id}')">Delete</button>` : () => '<span class="hint">Administrator access is required to change credentials.</span>'; el.innerHTML = state.connections.map(c => `<article class="card"><div class="card-top"><div><h3>${esc(c.name)}</h3><p>${esc(c.username)}@${esc(c.host)}:${c.port}</p></div><span class="tag">${esc(c.engine)}</span></div><div class="card-meta"><span>Credentials</span><b>Encrypted</b></div><div class="card-actions">${actions(c)}</div></article>`).join('') || '<div class="empty">No database connections match this search.</div>'; renderCollectionPagination('connections', 'connections-pagination'); }
 function renderStorage() { collectionControls('storage', 'storage-controls', 'Search storage name or type'); const el = $('#storage-list'); const actions = state.role === 'admin' ? s => `<button class="small-button" onclick="checkStorageHealth('${s.id}')">Health check</button><button class="small-button" onclick="testStorage('${s.id}')">Test</button><button class="small-button" onclick="editStorage('${s.id}')">Edit</button><button class="small-button danger" onclick="deleteStorage('${s.id}')">Delete</button>` : s => `<button class="small-button" onclick="testStorage('${s.id}')">Test</button><span class="hint">Administrator access is required to change credentials.</span>`; el.innerHTML = state.storage.map(s => { const health = state.storageHealth.find(item => item.targetId === s.id); const healthLabel = health ? `${health.status === 'healthy' ? 'Healthy' : 'Unavailable'}${health.checkedAt ? ` · ${fmtDate(health.checkedAt)}` : ''}` : 'Not checked'; return `<article class="card"><div class="card-top"><div><h3>${esc(s.name)}</h3><p>${esc(storageDescription(s))}</p></div><span class="tag">${esc(s.type)}</span></div><div class="card-meta"><span>Credentials</span><b>Encrypted</b></div><div class="card-meta"><span>Health</span><b class="status ${health?.status === 'healthy' ? 'success' : health?.status === 'unavailable' ? 'failed' : ''}">${esc(healthLabel)}</b></div><div class="card-actions">${actions(s)}</div></article>`; }).join('') || '<div class="empty">No storage targets match this search.</div>'; renderCollectionPagination('storage', 'storage-pagination'); }
-function renderJobs() { collectionControls('jobs', 'jobs-controls', 'Search schedule, database, storage, or cron'); const el = $('#jobs-list'); const admin = state.role === 'admin'; el.innerHTML = state.jobs.map(j => { const db = state.connections.find(c => c.id === j.databaseConnectionId); const st = state.storage.find(s => s.id === j.storageTargetId); const configActions = admin ? `<button class="small-button" onclick="editJob('${j.id}')">Edit</button><button class="small-button danger" onclick="deleteJob('${j.id}')">Delete</button>` : ''; const layout = j.backupLayout === 'database' ? 'Per database' : j.backupLayout === 'table' ? 'Per table' : 'Single file'; const compression = j.compression === 'gzip' ? 'GZIP' : j.compression === 'zip' ? 'ZIP' : 'RAW'; return `<article class="card"><div class="card-top"><div><h3>${esc(j.name)}</h3><p>${esc(db?.name || 'Missing database')} → ${esc(st?.name || 'Missing target')}</p></div><span class="tag">${j.enabled ? 'ACTIVE' : 'PAUSED'}</span></div><div class="card-meta"><span>${esc(j.cronExpression)} · ${esc(j.timezone)}</span><b>${layout} · ${compression} · ${j.retentionCount} kept</b></div><div class="card-meta"><span>Protection</span><b>${j.backupEncryption === 'aes-256-gcm' ? 'AES-256-GCM' : 'Archive only'}</b></div><div class="card-meta"><span>Next run</span><b>${fmtDate(j.nextRunAt)}</b></div><div class="card-actions"><button class="small-button" onclick="runJob('${j.id}')">Run now</button><button class="small-button" id="job-runs-button-${j.id}" onclick="viewJobRuns('${j.id}')">View backups</button>${configActions}</div><div id="job-runs-${j.id}" class="job-runs hidden"></div></article>`; }).join('') || '<div class="empty">No schedules match this search.</div>'; renderCollectionPagination('jobs', 'jobs-pagination'); }
+function renderJobs() { collectionControls('jobs', 'jobs-controls', 'Search schedule, database, storage, or cron'); const el = $('#jobs-list'); const admin = state.role === 'admin'; el.innerHTML = state.jobs.map(j => { const connectionIds = j.databaseConnectionIds || (j.databaseConnectionId ? [j.databaseConnectionId] : []); const storageIds = j.storageTargetIds || (j.storageTargetId ? [j.storageTargetId] : []); const databaseNames = connectionIds.map(id => state.connections.find(c => c.id === id)?.name || 'Missing database').join(', '); const storageNames = storageIds.map(id => state.storage.find(s => s.id === id)?.name || 'Missing target').join(', '); const configActions = admin ? `<button class="small-button" onclick="editJob('${j.id}')">Edit</button><button class="small-button danger" onclick="deleteJob('${j.id}')">Delete</button>` : ''; const layout = j.backupLayout === 'database' ? 'Per database' : j.backupLayout === 'table' ? 'Per table' : 'Single file'; const compression = j.compression === 'gzip' ? 'GZIP' : j.compression === 'zip' ? 'ZIP' : 'RAW'; return `<article class="card"><div class="card-top"><div><h3>${esc(j.name)}</h3><p>${esc(databaseNames || 'Missing database')} → ${esc(storageNames || 'Missing target')}</p></div><span class="tag">${j.enabled ? 'ACTIVE' : 'PAUSED'}</span></div><div class="card-meta"><span>${esc(j.cronExpression)} · ${esc(j.timezone)}</span><b>${layout} · ${compression} · ${j.retentionCount} kept</b></div><div class="card-meta"><span>Protection</span><b>${j.backupEncryption === 'aes-256-gcm' ? 'AES-256-GCM' : 'Archive only'}</b></div><div class="card-meta"><span>Next run</span><b>${fmtDate(j.nextRunAt)}</b></div><div class="card-actions"><button class="small-button" onclick="runJob('${j.id}')">Run now</button><button class="small-button" id="job-runs-button-${j.id}" onclick="viewJobRuns('${j.id}')">View backups</button>${configActions}</div><div id="job-runs-${j.id}" class="job-runs hidden"></div></article>`; }).join('') || '<div class="empty">No schedules match this search.</div>'; renderCollectionPagination('jobs', 'jobs-pagination'); }
 
 function overviewDateLabel(value) {
   if (!value) return '—';

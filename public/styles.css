@@ -5412,6 +5412,31 @@ html[data-theme="dark"] body .update-history-item {
     padding-bottom: 4px;
   }
 }
+
+/* Keep the shared page context visible while long views are scrolled. The
+   negative margin preserves the existing main-content spacing; the top
+   padding gives the sticky bar an opaque surface under the browser chrome. */
+body .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin-top: -28px;
+  padding-top: 28px;
+  background: var(--ui-canvas);
+}
+
+@media (max-width: 767px) {
+  body .topbar {
+    margin-top: -20px;
+    padding-top: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body .topbar {
+    transition: none;
+  }
+}
 body button.is-busy {
   cursor: progress;
   opacity: .78;
@@ -5697,4 +5722,62 @@ html:not([data-theme="dark"]) body .overview-error {
   body .overview-operations-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Multi-source schedule pickers. Keep the lists compact, searchable, and
+   readable in both themes without changing the existing form grid. */
+.multi-select-field .multi-select-search,
+.database-search {
+  width: 100%;
+  margin-bottom: 9px;
+}
+.multi-select-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 190px;
+  overflow: auto;
+  padding: 2px;
+}
+.multi-select-item,
+.database-check-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+.multi-select-item input,
+.database-check-item input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--teal);
+}
+.multi-select-item span { min-width: 0; }
+.multi-select-item b { display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.multi-select-item small { display: block; color: var(--muted); font-size: 10px; margin-top: 2px; }
+.multi-select-item:has(input:checked),
+.database-check-item:has(input:checked) { border-color: var(--teal); background: color-mix(in srgb, var(--teal) 9%, var(--panel)); }
+.grouped-database-checklist { display: grid; gap: 12px; max-height: 270px; overflow: auto; padding: 2px; }
+.database-group { min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: 10px; }
+.database-group legend { padding: 0 6px; color: var(--ink); font-size: 12px; font-weight: 800; }
+.database-group legend small { color: var(--muted); font-size: 10px; font-weight: 600; }
+.database-group .database-check-item { border: 0; border-radius: 6px; min-height: 36px; padding: 6px 8px; background: transparent; }
+.database-group .database-check-item:hover { background: color-mix(in srgb, var(--teal) 7%, var(--panel)); }
+html[data-theme="dark"] body .multi-select-item,
+html[data-theme="dark"] body .database-check-item,
+html[data-theme="dark"] body .database-group { border-color: #315363; background: #102a3a; color: #e4eef0; }
+html[data-theme="dark"] body .multi-select-item small,
+html[data-theme="dark"] body .database-group legend small { color: #a9bdc4; }
+html[data-theme="dark"] body .multi-select-item:has(input:checked),
+html[data-theme="dark"] body .database-check-item:has(input:checked) { background: #173f4b; border-color: #4abdb2; }
+html[data-theme="dark"] body .database-group .database-check-item:hover { background: #173b49; }
+@media (max-width: 700px) {
+  .multi-select-list { grid-template-columns: 1fr; max-height: 230px; }
 }

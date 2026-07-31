@@ -55,9 +55,11 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       CREATE TABLE IF NOT EXISTS database_connections (id TEXT PRIMARY KEY, name TEXT NOT NULL, engine TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT NOT NULL, password_enc TEXT NOT NULL, database_name TEXT NOT NULL, database_scope TEXT NOT NULL DEFAULT 'selected', database_names TEXT NOT NULL DEFAULT '[]', ssl INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS storage_targets (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config_enc TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS backup_jobs (id TEXT PRIMARY KEY, name TEXT NOT NULL, database_connection_id TEXT NOT NULL REFERENCES database_connections(id) ON DELETE CASCADE, storage_target_id TEXT NOT NULL REFERENCES storage_targets(id) ON DELETE CASCADE, database_scope TEXT NOT NULL DEFAULT 'selected', database_names TEXT NOT NULL DEFAULT '[]', backup_layout TEXT NOT NULL DEFAULT 'single', backup_objects TEXT NOT NULL DEFAULT '{}', cron_expression TEXT NOT NULL, timezone TEXT NOT NULL DEFAULT 'UTC', enabled INTEGER NOT NULL DEFAULT 1, compression TEXT NOT NULL DEFAULT 'gzip', backup_encryption TEXT NOT NULL DEFAULT 'none', retention_count INTEGER NOT NULL DEFAULT 7, retry_count INTEGER NOT NULL DEFAULT 0, retry_delay_seconds INTEGER NOT NULL DEFAULT 300, overlap_policy TEXT NOT NULL DEFAULT 'skip', filename_prefix TEXT NOT NULL, next_run_at TEXT, last_run_at TEXT, created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS backup_runs (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, filename TEXT, storage_location TEXT, storage_folder TEXT, size_bytes INTEGER, sha256 TEXT, verification_status TEXT, verification_message TEXT, restore_verification_status TEXT, restore_verification_message TEXT, error_message TEXT, attempt INTEGER NOT NULL DEFAULT 1);
+      CREATE TABLE IF NOT EXISTS backup_runs (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, filename TEXT, storage_location TEXT, storage_folder TEXT, storage_target_id TEXT, database_connection_id TEXT, database_names TEXT, database_scope TEXT, size_bytes INTEGER, sha256 TEXT, verification_status TEXT, verification_message TEXT, restore_verification_status TEXT, restore_verification_message TEXT, error_message TEXT, attempt INTEGER NOT NULL DEFAULT 1);
       CREATE TABLE IF NOT EXISTS verification_reports (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES backup_runs(id) ON DELETE CASCADE, kind TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL, details_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS storage_health (target_id TEXT PRIMARY KEY REFERENCES storage_targets(id) ON DELETE CASCADE, status TEXT NOT NULL, message TEXT NOT NULL, latency_ms INTEGER, checked_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS backup_job_connections (job_id TEXT NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE, connection_id TEXT NOT NULL REFERENCES database_connections(id) ON DELETE CASCADE, database_names TEXT NOT NULL DEFAULT '[]', position INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (job_id, connection_id));
+      CREATE TABLE IF NOT EXISTS backup_job_storages (job_id TEXT NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE, storage_target_id TEXT NOT NULL REFERENCES storage_targets(id) ON DELETE CASCADE, position INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (job_id, storage_target_id));
       CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, user_id TEXT, action TEXT NOT NULL, entity_type TEXT, entity_id TEXT, metadata_json TEXT, created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_runs_job_started ON backup_runs(job_id, started_at DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON backup_jobs(enabled, next_run_at);
@@ -74,12 +76,18 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     try { this.db.exec("ALTER TABLE backup_runs ADD COLUMN verification_message TEXT"); } catch {}
     try { this.db.exec("ALTER TABLE backup_runs ADD COLUMN storage_location TEXT"); } catch {}
     try { this.db.exec("ALTER TABLE backup_runs ADD COLUMN storage_folder TEXT"); } catch {}
+    try { this.db.exec("ALTER TABLE backup_runs ADD COLUMN storage_target_id TEXT"); } catch {}
+    try { this.db.exec("ALTER TABLE backup_runs ADD COLUMN database_connection_id TEXT"); } catch {}
+    try { this.db.exec("ALTER TABLE backup_runs ADD COLUMN database_names TEXT"); } catch {}
+    try { this.db.exec("ALTER TABLE backup_runs ADD COLUMN database_scope TEXT"); } catch {}
     try { this.db.exec("ALTER TABLE backup_jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"); } catch {}
     try { this.db.exec("ALTER TABLE backup_jobs ADD COLUMN retry_delay_seconds INTEGER NOT NULL DEFAULT 300"); } catch {}
     try { this.db.exec("ALTER TABLE backup_jobs ADD COLUMN overlap_policy TEXT NOT NULL DEFAULT 'skip'"); } catch {}
     try { this.db.exec("ALTER TABLE backup_runs ADD COLUMN restore_verification_status TEXT"); } catch {}
     try { this.db.exec("ALTER TABLE backup_runs ADD COLUMN restore_verification_message TEXT"); } catch {}
     try { this.db.exec("ALTER TABLE backup_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1"); } catch {}
+    try { this.db.exec("INSERT OR IGNORE INTO backup_job_connections (job_id,connection_id,database_names,position) SELECT id,database_connection_id,database_names,0 FROM backup_jobs WHERE database_connection_id IS NOT NULL"); } catch {}
+    try { this.db.exec("INSERT OR IGNORE INTO backup_job_storages (job_id,storage_target_id,position) SELECT id,storage_target_id,0 FROM backup_jobs WHERE storage_target_id IS NOT NULL"); } catch {}
   }
 
   encrypt(value: unknown): string {

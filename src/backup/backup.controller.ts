@@ -18,13 +18,25 @@ export class BackupController {
 @Post('connections/test') testConnection(@Req() req: FastifyRequest, @Body() body: any) { this.auth.requireAdmin(req); return this.backups.testConnection(body); }
   @Get('connections/:id/databases') databases(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.backups.listAvailableDatabases(id); }
   @Delete('connections/:id') deleteConnection(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.backups.deleteConnection(id); }
-  @Get('jobs') jobs(@Req() req: FastifyRequest) { this.auth.requireSession(req); const query = (req as any).query || {}; return this.backups.listJobsPage(query); }
-  @Post('jobs') saveJob(@Req() req: FastifyRequest, @Body() body: any) { this.auth.requireAdmin(req); return this.backups.saveJob(body); }
+  @Get('jobs') jobs(@Req() req: FastifyRequest) { this.auth.requireSession(req); const query = (req as any).query || {}; return this.backups.listJobsPageV2(query); }
+  @Post('jobs') saveJob(@Req() req: FastifyRequest, @Body() body: any) { this.auth.requireAdmin(req); return this.backups.saveJobV2(body); }
   @Get('jobs/:id/runs') jobRuns(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireSession(req); const query = (req as any).query || {}; return this.backups.runsForJobPage(id, query); }
   @Delete('jobs/:id') deleteJob(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.backups.deleteJob(id); }
   @Post('jobs/:id/run') run(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireSession(req, true); return this.backups.runNow(id); }
   @Get('processes') processes(@Req() req: FastifyRequest) { this.auth.requireSession(req); return this.backups.liveProcesses(); }
   @Get('runs') runs(@Req() req: FastifyRequest) { this.auth.requireSession(req); const query = (req as any).query || {}; return this.backups.runsPage(query); }
+  @Post('runs/:id/download/prepare') prepareDownload(@Req() req: FastifyRequest, @Param('id') id: string) { const session = this.auth.requireSession(req); return this.backups.startDownloadPreparation(id, session.user_id); }
+  @Get('downloads/:id/status') downloadStatus(@Req() req: FastifyRequest, @Param('id') id: string) { const session = this.auth.requireSession(req); return this.backups.getDownloadPreparation(id, session.user_id); }
+  @Get('downloads/:id/file') async preparedDownload(@Req() req: FastifyRequest, @Param('id') id: string, @Res() reply: FastifyReply) {
+    const session = this.auth.requireSession(req);
+    const result = this.backups.takePreparedDownload(id, session.user_id);
+    const filename = result.filename.replace(/["\r\n]/g, '_');
+    reply.header('Content-Disposition', `attachment; filename="${filename}"`);
+    reply.type('application/octet-stream');
+    const stream = fs.createReadStream(result.path);
+    if (result.cleanup) stream.once('close', () => { try { fs.rmSync(result.path, { force: true }); fs.rmSync(result.path.replace(/[\\/][^\\/]+$/, ''), { recursive: true, force: true }); } catch {} });
+    return reply.send(stream);
+  }
   @Get('runs/:id/download') async download(@Req() req: FastifyRequest, @Param('id') id: string, @Res() reply: FastifyReply) {
     this.auth.requireSession(req);
     const result = await this.backups.downloadRun(id);

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ServerResponse } from 'node:http';
 
-export type RealtimeTopic = 'processes' | 'backup_runs' | 'sessions' | 'rate_limit' | 'updates' | 'storage_health';
+export type RealtimeTopic = 'processes' | 'backup_runs' | 'sessions' | 'rate_limit' | 'updates' | 'storage_health' | 'downloads';
 type Role = 'admin' | 'operator' | 'viewer' | string;
 type Connection = {
   id: string;
@@ -35,7 +35,7 @@ export class RealtimeService {
   }
 
   allowedTopics(role: Role): RealtimeTopic[] {
-    const common: RealtimeTopic[] = ['processes', 'backup_runs', 'storage_health'];
+    const common: RealtimeTopic[] = ['processes', 'backup_runs', 'storage_health', 'downloads'];
     return role === 'admin' ? [...common, 'sessions', 'rate_limit', 'updates'] : common;
   }
 
@@ -83,6 +83,13 @@ export class RealtimeService {
   publish(topic: RealtimeTopic, payload: unknown) {
     for (const connection of this.connections.values()) {
       if (!connection.topics.has(topic)) continue;
+      if (!this.writeEvent(connection, topic, payload)) this.close(connection.id);
+    }
+  }
+
+  publishToUser(topic: RealtimeTopic, userId: string, payload: unknown) {
+    for (const connection of this.connections.values()) {
+      if (connection.userId !== userId || !connection.topics.has(topic)) continue;
       if (!this.writeEvent(connection, topic, payload)) this.close(connection.id);
     }
   }
