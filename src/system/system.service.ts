@@ -9,7 +9,9 @@ import { DatabaseService } from '../database/database.service';
 export type NotificationEvent = 'backup_success' | 'backup_failed' | 'capacity_warning';
 
 type ReleaseArtifact = { url: string; sha256: string; bytes?: number };
-type ReleaseManifest = { version: string; channel?: string; releaseNotesUrl?: string; publishedAt?: string; artifacts: Record<string, ReleaseArtifact> };
+type ReleaseSummary = { version: string; releaseNotesUrl?: string; publishedAt?: string };
+type NormalizedReleaseSummary = { version: string; releaseNotesUrl: string; publishedAt: string };
+type ReleaseManifest = { version: string; channel?: string; releaseNotesUrl?: string; publishedAt?: string; releases?: ReleaseSummary[]; artifacts: Record<string, ReleaseArtifact> };
 
 @Injectable()
 export class SystemService {
@@ -206,9 +208,23 @@ export class SystemService {
     return { key, url: String(artifact.url), sha256: String(artifact.sha256).toLowerCase(), bytes: Number(artifact.bytes || 0) || undefined };
   }
 
+  private releaseHistory(value: unknown, currentVersion: string, latest?: NormalizedReleaseSummary) {
+    const candidates = Array.isArray(value) ? value : [];
+    const summaries = candidates.map(item => {
+      const release = item as ReleaseSummary;
+      const version = String(release?.version || '').replace(/^v/, '');
+      const releaseNotesUrl = String(release?.releaseNotesUrl || '');
+      if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) || !/^https:\/\//i.test(releaseNotesUrl)) return null;
+      return { version, releaseNotesUrl, publishedAt: String(release?.publishedAt || '') };
+    }).filter((release): release is NormalizedReleaseSummary => Boolean(release));
+    if (latest?.version && latest.releaseNotesUrl && !summaries.some(release => release.version === latest.version)) summaries.push(latest);
+    return summaries.filter(release => this.compareVersions(release.version, currentVersion) > 0).sort((left, right) => this.compareVersions(right.version, left.version));
+  }
+
   updateInfo() {
     const saved = this.readUpdateStatus(); const currentVersion = this.appVersion(); const latest = saved.latestVersion ? String(saved.latestVersion) : '';
-    return { enabled: Boolean(this.updateManifestUrl()), currentVersion, channel: String(process.env.UPDATE_CHANNEL || 'stable'), latestVersion: latest || null, updateAvailable: Boolean(latest && this.compareVersions(latest, currentVersion) > 0 && saved.artifact), releaseNotesUrl: saved.releaseNotesUrl || null, publishedAt: saved.publishedAt || null, checkedAt: saved.checkedAt || null, status: saved.state || 'not_checked', progress: Number(saved.progress || 0), error: saved.error || '' };
+    const latestRelease = latest && /^https:\/\//i.test(String(saved.releaseNotesUrl || '')) ? { version: latest, releaseNotesUrl: String(saved.releaseNotesUrl), publishedAt: String(saved.publishedAt || '') } : undefined;
+    return { enabled: Boolean(this.updateManifestUrl()), currentVersion, channel: String(process.env.UPDATE_CHANNEL || 'stable'), latestVersion: latest || null, updateAvailable: Boolean(latest && this.compareVersions(latest, currentVersion) > 0 && saved.artifact), releaseNotesUrl: saved.releaseNotesUrl || null, publishedAt: saved.publishedAt || null, releases: this.releaseHistory(saved.releases, currentVersion, latestRelease), checkedAt: saved.checkedAt || null, status: saved.state || 'not_checked', progress: Number(saved.progress || 0), error: saved.error || '' };
   }
 
   async checkForUpdate() {
@@ -221,7 +237,9 @@ export class SystemService {
     const manifest = await response.json() as ReleaseManifest;
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(String(manifest.version || ''))) throw new BadRequestException('Update manifest has an invalid version.');
     const artifact = this.releaseArtifact(manifest); const currentVersion = this.appVersion(); const available = Boolean(artifact && this.compareVersions(String(manifest.version), currentVersion) > 0);
-    this.writeUpdateStatus({ state: available ? 'available' : 'current', checkedAt: new Date().toISOString(), currentVersion, latestVersion: String(manifest.version), channel: String(manifest.channel || process.env.UPDATE_CHANNEL || 'stable'), releaseNotesUrl: /^https:\/\//i.test(String(manifest.releaseNotesUrl || '')) ? manifest.releaseNotesUrl : '', publishedAt: manifest.publishedAt || '', artifact: artifact || null, error: '' });
+    const releaseNotesUrl = /^https:\/\//i.test(String(manifest.releaseNotesUrl || '')) ? String(manifest.releaseNotesUrl) : '';
+    const releases = Array.isArray(manifest.releases) ? manifest.releases : [{ version: String(manifest.version), releaseNotesUrl, publishedAt: String(manifest.publishedAt || '') }];
+    this.writeUpdateStatus({ state: available ? 'available' : 'current', checkedAt: new Date().toISOString(), currentVersion, latestVersion: String(manifest.version), channel: String(manifest.channel || process.env.UPDATE_CHANNEL || 'stable'), releaseNotesUrl, publishedAt: manifest.publishedAt || '', releases, artifact: artifact || null, error: '' });
     return this.updateInfo();
   }
 

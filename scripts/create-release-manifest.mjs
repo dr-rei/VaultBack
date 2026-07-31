@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 const args = process.argv.slice(2);
 
@@ -36,6 +37,17 @@ for (const specification of artifactArguments()) {
 }
 
 if (!Object.keys(artifacts).length) throw new Error('At least one --artifact platform-arch=archive.tar.gz is required.');
+function compareVersions(left, right) {
+  const parse = value => String(value).replace(/^v/, '').split('-')[0].split('.').map(part => Number.parseInt(part, 10) || 0);
+  const a = parse(left); const b = parse(right);
+  for (let index = 0; index < 3; index += 1) if ((a[index] || 0) !== (b[index] || 0)) return (b[index] || 0) - (a[index] || 0);
+  return 0;
+}
+function releaseTags() {
+  try { return execFileSync('git', ['tag', '--list', 'v*.*.*'], { encoding: 'utf8' }).split(/\r?\n/).map(item => item.replace(/^v/, '')).filter(item => /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(item)); } catch { return []; }
+}
+const releaseVersions = [...new Set([version, ...releaseTags()])].sort(compareVersions);
+const releases = releaseVersions.map(releaseVersion => ({ version: releaseVersion, releaseNotesUrl: `https://github.com/${repository}/releases/tag/v${releaseVersion}` }));
 fs.mkdirSync(path.dirname(output), { recursive: true });
-fs.writeFileSync(output, `${JSON.stringify({ version, channel, publishedAt: new Date().toISOString(), releaseNotesUrl, artifacts }, null, 2)}\n`);
+fs.writeFileSync(output, `${JSON.stringify({ version, channel, publishedAt: new Date().toISOString(), releaseNotesUrl, releases, artifacts }, null, 2)}\n`);
 console.log(`Wrote ${output}`);

@@ -5256,3 +5256,162 @@ html[data-theme="dark"] body .app-footer-name {
     padding-bottom: 4px;
   }
 }
+body button.is-busy {
+  cursor: progress;
+  opacity: .78;
+}
+
+body .update-history {
+  margin-top: 18px;
+  border-top: 1px solid var(--refresh-line, var(--line));
+  padding-top: 18px;
+}
+
+body .update-history-head,
+body .update-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+body .update-history-head {
+  margin-bottom: 10px;
+}
+
+body .update-history-head b,
+body .update-history-head span,
+body .update-history-item b,
+body .update-history-item small {
+  display: block;
+}
+
+body .update-history-head b {
+  color: var(--refresh-ink, var(--ink));
+  font-size: 13px;
+}
+
+body .update-history-head span:not(.tag),
+body .update-history-item small {
+  color: var(--refresh-muted, var(--muted));
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+body .update-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+body .update-history-item {
+  border: 1px solid var(--refresh-line, var(--line));
+  border-radius: 10px;
+  padding: 11px 12px;
+  background: var(--refresh-panel, var(--panel));
+}
+
+body .update-history-item > div:first-child {
+  min-width: 0;
+}
+
+body .update-history-item b {
+  color: var(--refresh-ink, var(--ink));
+  font-size: 12px;
+}
+
+body .update-history-item b + .tag {
+  display: inline-block;
+  margin-left: 7px;
+  vertical-align: 1px;
+}
+
+@media (max-width: 560px) {
+  body .update-history-head,
+  body .update-history-item {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+body .button-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-right: 7px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: vaultback-button-spin .7s linear infinite;
+}
+
+@keyframes vaultback-button-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body .button-spinner { animation: none; border-right-color: currentColor; }
+}
+body .database-checklist-host {
+  margin-top: 10px;
+}
+
+body .database-checklist {
+  display: grid;
+  gap: 4px;
+  max-height: 270px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--ui-line, var(--refresh-line, var(--line)));
+  border-radius: 10px;
+  background: var(--ui-surface, var(--refresh-panel, var(--panel)));
+}
+
+body .database-check-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: var(--ui-ink, var(--refresh-ink, var(--ink))) !important;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+body .database-check-item:hover,
+body .database-check-item:has(input:focus-visible) {
+  background: var(--ui-teal-soft, #e7f3ef);
+}
+
+body .database-check-item input[type="checkbox"] {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  border: 2px solid var(--ui-muted, #82969b);
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+body .database-check-item input[type="checkbox"]:checked {
+  border-color: var(--refresh-teal, var(--teal));
+  background: var(--refresh-teal, var(--teal));
+  box-shadow: inset 0 0 0 3px var(--ui-surface, #fff);
+}
+
+html[data-theme="dark"] body .database-check-item:hover,
+html[data-theme="dark"] body .database-check-item:has(input:focus-visible) {
+  background: #21424a;
+}
+
+html[data-theme="dark"] body .database-check-item input[type="checkbox"]:checked {
+  box-shadow: inset 0 0 0 3px #172b36;
+}

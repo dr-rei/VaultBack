@@ -39,6 +39,33 @@ function setTheme(theme) {
   updateThemeButton();
 }
 function toast(message, error=false){const el=$('#toast');el.textContent=message;el.style.zIndex='100';el.className=`toast show${error?' error':''}`;setTimeout(()=>el.className='toast',3500)}
+function setButtonBusy(button, busy, label='Working…') {
+  if (!button) return;
+  if (busy) {
+    if (button.dataset.busy === 'true') return;
+    button.dataset.busy = 'true';
+    button.dataset.busyOriginal = button.innerHTML;
+    button.dataset.busyDisabled = button.disabled ? 'true' : 'false';
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.classList.add('is-busy');
+    button.innerHTML = `<span class="button-spinner" aria-hidden="true"></span><span>${esc(label)}</span>`;
+    return;
+  }
+  if (button.dataset.busy !== 'true') return;
+  button.innerHTML = button.dataset.busyOriginal || button.innerHTML;
+  button.disabled = button.dataset.busyDisabled === 'true';
+  button.removeAttribute('aria-busy');
+  button.classList.remove('is-busy');
+  delete button.dataset.busy;
+  delete button.dataset.busyOriginal;
+  delete button.dataset.busyDisabled;
+}
+async function withButtonBusy(button, task, label='Working…') {
+  if (!button || button.dataset.busy === 'true' || button.disabled) return;
+  setButtonBusy(button, true, label);
+  try { return await task(); } finally { setButtonBusy(button, false); }
+}
 function appDialog({title='Please confirm',message='',confirmText='Continue',cancelText='Cancel',danger=false,showCancel=true}={}){return new Promise(resolve=>{const root=$('#modal-root');if(!root)return resolve(false);const previous=document.activeElement;const id=`app-dialog-${Date.now()}`;root.insertAdjacentHTML('beforeend',`<section id="${id}" class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="${id}-title"><div class="confirm-dialog-card"><div class="confirm-dialog-mark ${danger?'danger':''}">${danger?'!':'?'}</div><div class="confirm-dialog-copy"><h3 id="${id}-title">${esc(title)}</h3><p>${esc(message)}</p></div><div class="confirm-dialog-actions">${showCancel?`<button type="button" class="secondary" data-dialog-cancel>${esc(cancelText)}</button>`:''}<button type="button" class="${danger?'danger-button':'primary'}" data-dialog-confirm>${esc(confirmText)}</button></div></div></section>`);const modal=document.getElementById(id);let settled=false;const finish=value=>{if(settled)return;settled=true;modal?.remove();if(!document.querySelector('.form-panel:not(.hidden), .user-form:not(.hidden), .confirm-dialog'))document.body.classList.remove('modal-open');if(previous instanceof HTMLElement)previous.focus();resolve(value)};modal.querySelector('[data-dialog-confirm]').onclick=()=>finish(true);modal.querySelector('[data-dialog-cancel]')?.addEventListener('click',()=>finish(false));modal.addEventListener('click',event=>{if(event.target===modal)finish(false)});modal.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();finish(false)}});document.body.classList.add('modal-open');requestAnimationFrame(()=>modal.querySelector('[data-dialog-confirm]')?.focus())})}
 function confirmAction(message,title='Confirm deletion'){return appDialog({title,message,confirmText:'Delete',danger:true})}
 function dependencyNotice(){if(!state.dependencies||state.dependencies.ok)return '';const missing=state.dependencies.engines.map(item=>`${item.engine}: ${item.client.available?'client ready':'client missing'}, ${item.dump.available?'dump ready':'dump missing'}`).join(' · ');return `<div class="callout dependency-warning"><b>Bundled backup tools required</b><br>${esc(missing)}<br>Connection tests and database discovery are ready; use Settings → Database tools to install or repair the dump tools for backups and restores.</div>`}
@@ -62,7 +89,11 @@ function renderUpdatePanel() {
     badge.textContent = info.updateAvailable ? 'Update available' : info.status === 'failed' ? 'Check failed' : info.status === 'current' ? 'Up to date' : info.status === 'installed' ? 'Updated' : 'Not checked';
     badge.className = `tag ${info.updateAvailable ? 'update-available' : ''}`;
   }
-  if (status) status.innerHTML = info.error ? `<div class="callout dependency-warning">${esc(info.error)}</div>` : `<div class="update-summary"><div><span>Current version</span><b>${esc(info.currentVersion || '—')}</b></div><div><span>Latest version</span><b>${esc(info.latestVersion || 'Not checked')}</b></div><div><span>Channel</span><b>${esc(info.channel || 'stable')}</b></div><div><span>Last checked</span><b>${esc(info.checkedAt ? fmtDate(info.checkedAt) : 'Not checked')}</b></div></div>${info.updateAvailable ? `<p class="update-available-note">A newer release is ready. Review the release notes before installing.</p>` : info.status === 'installed' ? '<p class="update-success-note">The application reports that the release was installed successfully.</p>' : ''}`;
+  if (status) {
+    const history = Array.isArray(info.releases) ? info.releases : [];
+    const historyMarkup = `<div class="update-history"><div class="update-history-head"><div><b>Release changelog</b><span>Changes available after ${esc(info.currentVersion || 'your version')}</span></div><span class="tag">${history.length} newer version${history.length === 1 ? '' : 's'}</span></div>${history.length ? `<div class="update-history-list">${history.map(release => `<article class="update-history-item"><div><b>VaultBack v${esc(release.version)}</b>${release.version === info.latestVersion ? '<span class="tag">Latest</span>' : ''}<small>${esc(release.publishedAt ? fmtDate(release.publishedAt) : 'Release notes')}</small></div><a class="small-button" href="${esc(release.releaseNotesUrl)}" target="_blank" rel="noopener noreferrer">View changelog</a></article>`).join('')}</div>` : '<div class="empty">No releases newer than the installed version were found.</div>'}</div>`;
+    status.innerHTML = info.error ? `<div class="callout dependency-warning">${esc(info.error)}</div>` : `<div class="update-summary"><div><span>Current version</span><b>${esc(info.currentVersion || '—')}</b></div><div><span>Latest version</span><b>${esc(info.latestVersion || 'Not checked')}</b></div><div><span>Channel</span><b>${esc(info.channel || 'stable')}</b></div><div><span>Last checked</span><b>${esc(info.checkedAt ? fmtDate(info.checkedAt) : 'Not checked')}</b></div></div>${info.updateAvailable ? `<p class="update-available-note">A newer release is ready. Review the release notes before installing.</p>` : info.status === 'installed' ? '<p class="update-success-note">The application reports that the release was installed successfully.</p>' : ''}${info.checkedAt ? historyMarkup : ''}`;
+  }
   if (notes) {
     notes.classList.toggle('hidden', !info.releaseNotesUrl);
     notes.onclick = () => { if (info.releaseNotesUrl) window.open(info.releaseNotesUrl, '_blank', 'noopener,noreferrer'); };
@@ -85,7 +116,7 @@ async function loadUpdateInfo(check = false) {
     updateCheckInFlight = false;
   }
 }
-async function startUpdate() { const button = $('#install-update'); if (!button) return; const confirmed = await appDialog({ title: 'Install VaultBack update?', message: 'VaultBack will download and verify the release, preserve data and credentials, then restart through the configured process manager. Do not start a backup during the update.', confirmText: 'Install update', cancelText: 'Cancel', danger: true }); if (!confirmed) return; button.disabled = true; try { const result = await api('/api/settings/update/install', { method: 'POST', body: JSON.stringify({}) }); state.update = { ...(state.update || {}), status: 'queued', updateAvailable: false, latestVersion: result.targetVersion }; renderUpdatePanel(); toast(result.message || 'Update started'); } catch (e) { toast(e.message, true); button.disabled = false; } }
+async function startUpdate() { const button = $('#install-update'); if (!button) return; const confirmed = await appDialog({ title: 'Install VaultBack update?', message: 'VaultBack will download and verify the release, preserve data and credentials, then restart through the configured process manager. Do not start a backup during the update.', confirmText: 'Install update', cancelText: 'Cancel', danger: true }); if (!confirmed) return; try { const result = await withButtonBusy(button, () => api('/api/settings/update/install', { method: 'POST', body: JSON.stringify({}) }), 'Installing update…'); if (!result) return; state.update = { ...(state.update || {}), status: 'queued', updateAvailable: false, latestVersion: result.targetVersion }; renderUpdatePanel(); toast(result.message || 'Update started'); } catch (e) { toast(e.message, true); } }
 function closeDependencySetup(){const modal=$('#dependency-setup-modal');modal?.remove();if(!document.querySelector('.form-panel:not(.hidden), .user-form:not(.hidden), .confirm-dialog, .dependency-setup-modal'))document.body.classList.remove('modal-open')}
 function dependencyInstallMarkup(job){const percent=Number.isFinite(Number(job?.percent))?Math.max(0,Math.min(100,Number(job.percent))):0;const complete=job?.state==='completed';const failed=job?.state==='failed';return `<div class="dependency-install-status ${complete?'is-complete':''} ${failed?'is-failed':''}"><div class="dependency-install-status-head"><b>${esc(job?.message||'Preparing tool setup…')}</b><span>${complete?'Ready':failed?'Failed':`${percent}%`}</span></div><div class="dependency-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width:${percent}%"></span></div>${job?.totalBytes?`<small>${esc(fmtBytes(job.bytesDownloaded))} of ${esc(fmtBytes(job.totalBytes))}</small>`:''}${failed?`<div class="callout dependency-warning">${esc(job.error||job.message||'Tool setup failed')}</div>`:''}</div>`}
 function toolStatusLabel(status){return status==='working'?'Working fine':status==='missing'?'Missing':'Corrupt or not responding'}
@@ -111,19 +142,18 @@ async function repairDependencyTools(){
   const confirmed=await appDialog({title:'Repair database tools?',message:'VaultBack will remove its platform-specific portable tool directory, then download and verify a fresh official package inside this application directory. Operating-system installations and PATH entries are ignored.',confirmText:'Repair and redownload',cancelText:'Cancel',danger:true});
   if(!confirmed)return;
   const button=$('#repair-dependency-tools');
-  if(button)button.disabled=true;
   const root=$('#dependency-tools-status');
-  try{let job=await api('/api/dependencies/repair',{method:'POST',body:JSON.stringify({})});if(root)root.innerHTML=dependencyInstallMarkup(job);while(!['completed','failed'].includes(job.state)){await new Promise(resolve=>setTimeout(resolve,900));job=await api(`/api/dependencies/install/${encodeURIComponent(job.id)}`);if(root)root.innerHTML=dependencyInstallMarkup(job)}if(job.state==='completed'){state.toolDiagnostics=null;state.toolDiagnosticsLoadedAt=0;await loadHealthDetails();await loadDependencyDiagnostics(true);toast('Database tools repaired and ready')}else{await loadDependencyDiagnostics(true);toast(job.error||'Tool repair failed',true)}}catch(e){if(root)root.innerHTML=`<div class="callout dependency-warning">${esc(e.message||'Tool repair failed')}</div>`;toast(e.message||'Tool repair failed',true)}finally{if(button)button.disabled=false}
+  try{await withButtonBusy(button, async()=>{let job=await api('/api/dependencies/repair',{method:'POST',body:JSON.stringify({})});if(root)root.innerHTML=dependencyInstallMarkup(job);while(!['completed','failed'].includes(job.state)){await new Promise(resolve=>setTimeout(resolve,900));job=await api(`/api/dependencies/install/${encodeURIComponent(job.id)}`);if(root)root.innerHTML=dependencyInstallMarkup(job)}if(job.state==='completed'){state.toolDiagnostics=null;state.toolDiagnosticsLoadedAt=0;await loadHealthDetails();await loadDependencyDiagnostics(true);toast('Database tools repaired and ready')}else{await loadDependencyDiagnostics(true);toast(job.error||'Tool repair failed',true)}},'Repairing tools…')}catch(e){if(root)root.innerHTML=`<div class="callout dependency-warning">${esc(e.message||'Tool repair failed')}</div>`;toast(e.message||'Tool repair failed',true)}
 }
-function bindDependencyToolsControls(){if(document.body.dataset.dependencyToolsBound)return;document.body.dataset.dependencyToolsBound='1';$('#refresh-dependency-tools')?.addEventListener('click',()=>void loadDependencyDiagnostics(true));$('#repair-dependency-tools')?.addEventListener('click',()=>void repairDependencyTools())}
+function bindDependencyToolsControls(){if(document.body.dataset.dependencyToolsBound)return;document.body.dataset.dependencyToolsBound='1';$('#refresh-dependency-tools')?.addEventListener('click',()=>void withButtonBusy($('#refresh-dependency-tools'),()=>loadDependencyDiagnostics(true),'Refreshing…'));$('#repair-dependency-tools')?.addEventListener('click',()=>void repairDependencyTools())}
 async function openDependencySetup(){if(state.role!=='admin')return toast('Only an administrator can install database tools',true);if($('#dependency-setup-modal'))return;let installer;try{installer=await api('/api/dependencies')}catch(e){return toast(e.message,true)}const pkg=installer.installer?.packages?.[0];const root=$('#modal-root');if(!root)return;if(!installer.installer?.supported||!pkg){root.insertAdjacentHTML('beforeend',`<section id="dependency-setup-modal" class="dependency-setup-modal" role="dialog" aria-modal="true" aria-labelledby="dependency-setup-title"><div class="dependency-setup-card"><button type="button" class="modal-close" aria-label="Close tool setup" onclick="closeDependencySetup()">×</button><span class="kicker">FIRST-TIME SETUP</span><h2 id="dependency-setup-title">Database tools</h2><p>Automatic downloads are not available for this server platform. Use the manual portable-tool instructions in the setup guide.</p><div class="callout dependency-warning">Supported automatic packages currently cover Windows x64 and Linux x64. Existing system tools and configured binary paths remain supported.</div><div class="form-actions"><button type="button" class="secondary" onclick="closeDependencySetup()">Close</button></div></div></section>`);document.body.classList.add('modal-open');return}root.insertAdjacentHTML('beforeend',`<section id="dependency-setup-modal" class="dependency-setup-modal" role="dialog" aria-modal="true" aria-labelledby="dependency-setup-title"><div class="dependency-setup-card"><button type="button" class="modal-close" aria-label="Close tool setup" onclick="closeDependencySetup()">×</button><span class="kicker">FIRST-TIME SETUP</span><h2 id="dependency-setup-title">Prepare database tools</h2><p>VaultBack can download the official MariaDB community client pack and use its compatible client and dump tools for both MySQL and MariaDB connections.</p><div class="dependency-package-card"><div><b>MariaDB ${esc(pkg.version)} portable client pack</b><small>Official source: ${esc(pkg.source||'MariaDB archive')}</small></div><span class="tag">Verified download</span></div><div class="callout">Only the command-line client tools are installed. No database server is installed, and your credentials are not sent to MariaDB.</div><div id="dependency-install-status" aria-live="polite"><div class="dependency-install-status"><div class="dependency-install-status-head"><b>Ready to download</b><span>Not started</span></div></div></div><div class="form-actions"><button type="button" class="secondary" onclick="closeDependencySetup()">Close</button><button type="button" class="primary" id="start-dependency-install">Download and install</button></div></div></section>`);document.body.classList.add('modal-open');const start=$('#start-dependency-install');const status=$('#dependency-install-status');start.onclick=async()=>{start.disabled=true;try{let job=await api('/api/dependencies/install',{method:'POST',body:JSON.stringify({})});status.innerHTML=dependencyInstallMarkup(job);while(!['completed','failed'].includes(job.state)){await new Promise(resolve=>setTimeout(resolve,900));job=await api(`/api/dependencies/install/${encodeURIComponent(job.id)}`);status.innerHTML=dependencyInstallMarkup(job)}if(job.state==='completed'){await loadHealthDetails();toast('Database tools are ready')}else start.disabled=false}catch(e){status.innerHTML=`<div class="callout dependency-warning">${esc(e.message)}</div>`;start.disabled=false}}}
 function storageDescription(s){const c=s.config||{};return s.type==='local'?c.path||'Local path':s.type==='ftp'?`${c.host||'FTP host'} · ${c.remotePath||'/'}`:s.type==='webdav'?c.url||'WebDAV URL':s.type==='google-drive'?'Google Drive folder':`OneDrive · ${c.remotePath||'root'}`}
 function field(label,name,value='',type='text',extra=''){return `<div class="field"><label>${label}</label><input name="${name}" type="${type}" value="${esc(value)}" ${extra}/></div>`}
 function selectField(label,name,options,value=''){return `<div class="field"><label>${label}</label><select name="${name}">${options.map(o=>`<option value="${esc(o[0])}" ${o[0]===value?'selected':''}>${esc(o[1])}</option>`).join('')}</select></div>`}
-async function deleteConnection(id){if(!await confirmAction('Delete this database and all schedules that use it?','Delete database connection'))return;try{await api(`/api/connections/${id}`,{method:'DELETE'});await loadAll();toast('Database deleted')}catch(e){toast(e.message,true)}}
-async function deleteStorage(id){if(!await confirmAction('Delete this storage target and all schedules that use it?','Delete storage target'))return;try{await api(`/api/storage/${id}`,{method:'DELETE'});await loadAll();toast('Storage target deleted')}catch(e){toast(e.message,true)}}
-async function deleteJob(id){if(!await confirmAction('Delete this schedule and its backup run history?','Delete schedule'))return;try{await api(`/api/jobs/${id}`,{method:'DELETE'});await loadAll();toast('Schedule deleted')}catch(e){toast(e.message,true)}}
-async function testStorage(id){try{const r=await api(`/api/storage/${id}/test`,{method:'POST'});toast(r.message)}catch(e){toast(e.message,true)}}
+async function deleteConnection(id){if(!await confirmAction('Delete this database and all schedules that use it?','Delete database connection'))return;const button=document.querySelector(`button[onclick="deleteConnection('${id}')"]`);try{await withButtonBusy(button,async()=>{await api(`/api/connections/${id}`,{method:'DELETE'});await loadAll();toast('Database deleted')},'Deleting…')}catch(e){toast(e.message,true)}}
+async function deleteStorage(id){if(!await confirmAction('Delete this storage target and all schedules that use it?','Delete storage target'))return;const button=document.querySelector(`button[onclick="deleteStorage('${id}')"]`);try{await withButtonBusy(button,async()=>{await api(`/api/storage/${id}`,{method:'DELETE'});await loadAll();toast('Storage target deleted')},'Deleting…')}catch(e){toast(e.message,true)}}
+async function deleteJob(id){if(!await confirmAction('Delete this schedule and its backup run history?','Delete schedule'))return;const button=document.querySelector(`button[onclick="deleteJob('${id}')"]`);try{await withButtonBusy(button,async()=>{await api(`/api/jobs/${id}`,{method:'DELETE'});await loadAll();toast('Schedule deleted')},'Deleting…')}catch(e){toast(e.message,true)}}
+async function testStorage(buttonOrId,id){const targetId=id||buttonOrId;const button=id?buttonOrId:document.querySelector(`button[onclick="testStorage('${targetId}')"]`);try{await withButtonBusy(button,async()=>{const r=await api(`/api/storage/${targetId}/test`,{method:'POST'});toast(r.message)},'Testing storage…')}catch(e){toast(e.message,true)}}
 // Bodyless POST endpoints must not receive an empty JSON body declaration.
 async function api(url, options={}){const headers={...(options.headers||{})};if(options.body!==undefined)headers['Content-Type']='application/json';const opts={...options,headers};if(opts.method&&opts.method!=='GET'&&state.csrf&&!/\/api\/auth\/(?:login|setup)$/.test(url))opts.headers['x-csrf-token']=state.csrf;const r=await fetch(url,opts);let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(data.message||'Request failed');return data}
 
@@ -170,9 +200,9 @@ document.addEventListener('click', event => {
 
 
 
-function renderJobDatabaseScope(el, available, selected, scope){const host=el.querySelector('#job-database-scope');const chosen=new Set(selected);host.innerHTML=`<label>Backup scope</label><select name="databaseScope"><option value="selected" ${scope==='selected'?'selected':''}>Selected databases</option><option value="all" ${scope==='all'?'selected':''}>All databases</option></select><div id="job-database-checklist" style="margin-top:10px"></div>`;const draw=()=>{const all=host.querySelector('[name=databaseScope]').value==='all';const checklist=all?'<div class="callout">Every database visible to this account will be backed up.</div>':available.length?`<div style="display:grid;gap:8px;border:1px solid #deded7;border-radius:8px;padding:12px;background:#fff">${available.map(name=>`<label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" name="databases" value="${esc(name)}" ${chosen.has(name)?'checked':''} style="width:auto;padding:0;border:0;box-shadow:none">${esc(name)}</label>`).join('')}</div>`:'<div class="callout">No databases were returned for this connection.</div>';host.querySelector('#job-database-checklist').innerHTML=checklist};host.querySelector('[name=databaseScope]').onchange=draw;draw()}
+function renderJobDatabaseScope(el, available, selected, scope){const host=el.querySelector('#job-database-scope');const chosen=new Set(selected);host.innerHTML=`<label>Backup scope</label><select name="databaseScope"><option value="selected" ${scope==='selected'?'selected':''}>Selected databases</option><option value="all" ${scope==='all'?'selected':''}>All databases</option></select><div id="job-database-checklist" class="database-checklist-host"></div>`;const draw=()=>{const all=host.querySelector('[name=databaseScope]').value==='all';const checklist=all?'<div class="callout">Every database visible to this account will be backed up.</div>':available.length?`<div class="database-checklist">${available.map(name=>`<label class="database-check-item"><input type="checkbox" name="databases" value="${esc(name)}" ${chosen.has(name)?'checked':''}> <span>${esc(name)}</span></label>`).join('')}</div>`:'<div class="callout">No databases were returned for this connection.</div>';host.querySelector('#job-database-checklist').innerHTML=checklist};host.querySelector('[name=databaseScope]').onchange=draw;draw()}
 
-function showConnectionForm(item={}){const el=$('#connection-form');el.classList.remove('hidden');el.innerHTML=formShell(item.id?'Edit database':'Add database',field('Display name','name',item.name)+selectField('Engine','engine',[['mysql','MySQL'],['mariadb','MariaDB']],item.engine||'mysql')+field('Host','host',item.host||'127.0.0.1')+field('Port','port',item.port||3306,'number')+field('Username','username',item.username||'')+field('Password','password','','password',item.id?'placeholder="Leave blank to keep current; empty passwords are supported" autocomplete="new-password"':'placeholder="Optional" autocomplete="new-password"')+`<div class="field"><label>Transport security</label><select name="ssl"><option value="false" ${!item.ssl?'selected':''}>Standard connection</option><option value="true" ${item.ssl?'selected':''}>Require SSL/TLS</option></select></div>`);const form=el.querySelector('.form-shell');const friendlyError=(message)=>message==='Internal server error'?'Could not test connection. Check that the MySQL/MariaDB client is installed and the database is reachable.':message;const readData=()=>{const f=new FormData(form);const data=Object.fromEntries(f);return {id:item.id,...data,port:Number(f.get('port')),ssl:f.get('ssl')==='true'}};const testButton=document.createElement('button');testButton.type='button';testButton.className='secondary';testButton.id='test-connection';testButton.textContent='Test connection';el.querySelector('.form-actions').insertBefore(testButton,el.querySelector('#save-form'));testButton.onclick=async()=>{testButton.disabled=true;try{const result=await api('/api/connections/test',{method:'POST',body:JSON.stringify(readData())});if(!result.ok)throw new Error(result.message);toast(result.message||'Database connection successful')}catch(e){toast(friendlyError(e.message),true)}finally{testButton.disabled=false}};$('#save-form').onclick=async()=>{const save=$('#save-form');save.disabled=true;try{const data=readData();const result=await api('/api/connections/test',{method:'POST',body:JSON.stringify(data)});if(!result.ok)throw new Error(result.message);await api('/api/connections',{method:'POST',body:JSON.stringify(data)});toast(`${result.message}; database saved`);closeForms();await loadAll()}catch(e){toast(friendlyError(e.message),true)}finally{save.disabled=false}}}
+function showConnectionForm(item={}){const el=$('#connection-form');el.classList.remove('hidden');el.innerHTML=formShell(item.id?'Edit database':'Add database',field('Display name','name',item.name)+selectField('Engine','engine',[['mysql','MySQL'],['mariadb','MariaDB']],item.engine||'mysql')+field('Host','host',item.host||'127.0.0.1')+field('Port','port',item.port||3306,'number')+field('Username','username',item.username||'')+field('Password','password','','password',item.id?'placeholder="Leave blank to keep current; empty passwords are supported" autocomplete="new-password"':'placeholder="Optional" autocomplete="new-password"')+`<div class="field"><label>Transport security</label><select name="ssl"><option value="false" ${!item.ssl?'selected':''}>Standard connection</option><option value="true" ${item.ssl?'selected':''}>Require SSL/TLS</option></select></div>`);const form=el.querySelector('.form-shell');const friendlyError=(message)=>message==='Internal server error'?'Could not test connection. Check that the MySQL/MariaDB client is installed and the database is reachable.':message;const readData=()=>{const f=new FormData(form);const data=Object.fromEntries(f);return {id:item.id,...data,port:Number(f.get('port')),ssl:f.get('ssl')==='true'}};const testButton=document.createElement('button');testButton.type='button';testButton.className='secondary';testButton.id='test-connection';testButton.textContent='Test connection';el.querySelector('.form-actions').insertBefore(testButton,el.querySelector('#save-form'));testButton.onclick=async()=>{try{await withButtonBusy(testButton,async()=>{const result=await api('/api/connections/test',{method:'POST',body:JSON.stringify(readData())});if(!result.ok)throw new Error(result.message);toast(result.message||'Database connection successful')},'Testing connection…')}catch(e){toast(friendlyError(e.message),true)}};$('#save-form').onclick=async()=>{const save=$('#save-form');try{await withButtonBusy(save,async()=>{const data=readData();const result=await api('/api/connections/test',{method:'POST',body:JSON.stringify(data)});if(!result.ok)throw new Error(result.message);await api('/api/connections',{method:'POST',body:JSON.stringify(data)});toast(`${result.message}; database saved`);closeForms();await loadAll()},'Saving database…')}catch(e){toast(friendlyError(e.message),true)}}}
 
 
 
@@ -188,15 +218,15 @@ function showAuth(setup){
     const f=new FormData(form);
     const button=$('#auth-submit');
     const feedback=$('#auth-feedback');
-    button.disabled=true;
+    setButtonBusy(button, true, setup ? 'Creating account…' : 'Signing in…');
     feedback?.classList.remove('show');
     try{await api(setup?'/api/auth/setup':'/api/auth/login',{method:'POST',body:JSON.stringify(Object.fromEntries(f))});const me=await api('/api/auth/me');state.userId=me.userId||'';state.isPrimary=Boolean(me.isPrimary);state.csrf=me.csrfToken;state.role=me.role||'viewer';await loadHealthDetails();$('#auth-screen').classList.add('hidden');$('#app-shell')?.classList.remove('hidden');$('#user-avatar').textContent=String(me.username||f.get('username')||'A').slice(0,1).toUpperCase();await loadAll();if(setup&&state.dependencies&&!state.dependencies.ok)void openDependencySetup()}
-    catch(e){const message=e.message||'Unable to continue';if(feedback){feedback.textContent=message;feedback.classList.add('show')}toast(message,true);button.disabled=false}
+    catch(e){const message=e.message||'Unable to continue';if(feedback){feedback.textContent=message;feedback.classList.add('show')}toast(message,true);setButtonBusy(button, false)}
   };
   $('#auth-form').addEventListener('input',()=>$('#auth-feedback')?.classList.remove('show'));
 }
 async function boot(){try{const health=await api('/api/health');state.version=String(health.version||'');const versionLabel=$('#app-version');if(versionLabel)versionLabel.textContent=state.version?`Version ${state.version}`:'Version unavailable';const status=await api('/api/auth/status');if(!status.setupComplete){showAuth(true);return}try{const me=await api('/api/auth/me');state.userId=me.userId||'';state.isPrimary=Boolean(me.isPrimary);state.csrf=me.csrfToken;state.role=me.role||'viewer';await loadHealthDetails();$('#user-avatar').textContent=me.username.slice(0,1).toUpperCase();$('#auth-loading')?.classList.add('hidden');$('#app-shell')?.classList.remove('hidden');await loadAll()}catch(e){if(state.encryption?.status==='error'){renderEncryptionBanner();toast(state.encryption.message,true)}else showAuth(false)}}catch(e){const loading=$('#auth-loading');if(loading)loading.innerHTML='<div class="auth-loading-card"><b>VaultBack</b><span>Unable to check the session. Refresh to try again.</span></div>';toast(e.message,true)}}
-document.querySelectorAll('.nav-item').forEach(b=>b.onclick=()=>setView(b.dataset.view));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>setView(b.dataset.go));document.querySelectorAll('[data-view-link]').forEach(b=>b.onclick=()=>setView(b.dataset.viewLink));$('#new-connection').onclick=()=>showConnectionForm();$('#new-storage').onclick=()=>showStorageForm();$('#new-job').onclick=()=>{if(!state.connections.length||!state.storage.length){toast('Add a database and storage target first',true);return}showJobForm()};$('#refresh-runs').onclick=async()=>{state.runs=await api('/api/runs');renderRuns()};$('#logout').onclick=async()=>{try{await api('/api/auth/logout',{method:'POST'});location.reload()}catch(e){toast(e.message,true)}};setTimeout(()=>void boot(),0);
+document.querySelectorAll('.nav-item').forEach(b=>b.onclick=()=>setView(b.dataset.view));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>setView(b.dataset.go));document.querySelectorAll('[data-view-link]').forEach(b=>b.onclick=()=>setView(b.dataset.viewLink));$('#new-connection').onclick=()=>showConnectionForm();$('#new-storage').onclick=()=>showStorageForm();$('#new-job').onclick=()=>{if(!state.connections.length||!state.storage.length){toast('Add a database and storage target first',true);return}showJobForm()};$('#refresh-runs').onclick=async()=>{state.runs=await api('/api/runs');renderRuns()};$('#logout').onclick=async()=>{try{await withButtonBusy($('#logout'),()=>api('/api/auth/logout',{method:'POST'}),'Signing out…');location.reload()}catch(e){toast(e.message,true)}};setTimeout(()=>void boot(),0);
 
 function showStorageForm(item={}){
   const el=$('#storage-form');el.classList.remove('hidden');const c=item.config||{};const type=item.type||'local';
@@ -204,7 +234,7 @@ function showStorageForm(item={}){
   el.innerHTML=formShell(item.id?'Edit storage target':'Add storage target',field('Display name','name',item.name)+common+`<div id="storage-guide-wrap" class="field full">${storageGuide(type)}</div>`+`<div id="storage-specific" class="form-grid full"></div>`);
   const draw=()=>{const selected=el.querySelector('[name=type]').value;$('#storage-guide-wrap').innerHTML=storageGuide(selected);$('#storage-specific').innerHTML=storageFields(selected,c)};
   el.querySelector('[name=type]').onchange=draw;draw();
-  $('#save-form').onclick=async()=>{try{const form=el.querySelector('.form-shell');const f=new FormData(form);const data=Object.fromEntries(f);data.config={};el.querySelectorAll('#storage-specific [name]').forEach(input=>{data.config[input.name]=input.type==='checkbox'?input.checked:input.value});delete data.type;data.type=el.querySelector('[name=type]').value;await api('/api/storage',{method:'POST',body:JSON.stringify({id:item.id,...data})});toast('Storage target saved');closeForms();await loadAll()}catch(e){toast(e.message,true)}}
+  $('#save-form').onclick=async()=>{const save=$('#save-form');try{await withButtonBusy(save,async()=>{const form=el.querySelector('.form-shell');const f=new FormData(form);const data=Object.fromEntries(f);data.config={};el.querySelectorAll('#storage-specific [name]').forEach(input=>{data.config[input.name]=input.type==='checkbox'?input.checked:input.value});delete data.type;data.type=el.querySelector('[name=type]').value;await api('/api/storage',{method:'POST',body:JSON.stringify({id:item.id,...data})});toast('Storage target saved');closeForms();await loadAll()},'Saving storage…')}catch(e){toast(e.message,true)}}
 }
 
 function vaultbackCronName(value, names) {
@@ -315,7 +345,9 @@ function showJobForm(item = {}) {
   void loadDatabases();
 
   $('#save-form').onclick = async () => {
+    const save = $('#save-form');
     try {
+      await withButtonBusy(save, async () => {
       const form = el.querySelector('.form-shell');
       const f = new FormData(form);
       const data = Object.fromEntries(f);
@@ -327,6 +359,7 @@ function showJobForm(item = {}) {
       toast('Schedule saved');
       closeForms();
       await loadAll();
+      }, 'Saving schedule…');
     } catch (e) {
       toast(e.message, true);
     }
@@ -410,8 +443,8 @@ document.addEventListener('click', event => {
 
 function formatCapacity(value) { if (value === null || value === undefined) return 'Unavailable'; if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`; if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`; return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`; }
 function updateNotificationFields() { const telegram = $('#notification-provider').value === 'telegram'; $('#notification-webhook-fields').classList.toggle('hidden', telegram); $('#notification-telegram-fields').classList.toggle('hidden', !telegram); }
-async function saveNotifications() { try { await api('/api/settings/notifications', { method: 'POST', body: JSON.stringify({ enabled: $('#notification-enabled').checked, provider: $('#notification-provider').value, webhookUrl: $('#notification-webhook-url').value, webhookToken: $('#notification-webhook-token').value, botToken: $('#notification-bot-token').value, chatId: $('#notification-chat-id').value, events: { backup_success: $('#notify-success').checked, backup_failed: $('#notify-failed').checked, capacity_warning: $('#notify-capacity').checked } }) }); toast('Notification settings saved'); state.notifications = await api('/api/settings/notifications'); renderSettings(); } catch (e) { toast(e.message, true); } }
-async function deleteUser(id) { if (!await confirmAction('Remove this user account? Existing sessions for the account will stop working.','Delete user')) return; try { await api(`/api/auth/users/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadCollection('users'); toast('User deleted'); } catch (e) { toast(e.message, true); } }
+async function saveNotifications() { const button = $('#save-notifications'); try { await withButtonBusy(button, async () => { await api('/api/settings/notifications', { method: 'POST', body: JSON.stringify({ enabled: $('#notification-enabled').checked, provider: $('#notification-provider').value, webhookUrl: $('#notification-webhook-url').value, webhookToken: $('#notification-webhook-token').value, botToken: $('#notification-bot-token').value, chatId: $('#notification-chat-id').value, events: { backup_success: $('#notify-success').checked, backup_failed: $('#notify-failed').checked, capacity_warning: $('#notify-capacity').checked } }) }); toast('Notification settings saved'); state.notifications = await api('/api/settings/notifications'); renderSettings(); }, 'Saving settings…'); } catch (e) { toast(e.message, true); } }
+async function deleteUser(id) { if (!await confirmAction('Remove this user account? Existing sessions for the account will stop working.','Delete user')) return; const button=document.querySelector(`button[onclick="deleteUser('${encodeURIComponent(id)}')"]`); try { await withButtonBusy(button, async()=>{ await api(`/api/auth/users/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadCollection('users'); toast('User deleted'); }, 'Deleting…'); } catch (e) { toast(e.message, true); } }
 async function exportSafeConfig() { try { const data = await api('/api/settings/export'); const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `vaultback-config-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(link.href); toast('Safe configuration exported'); } catch (e) { toast(e.message, true); } }
 
 function openSetupWizard() { const wizard = $('#setup-wizard'); wizard.innerHTML = `<div class="setup-wizard-card"><button class="modal-close" aria-label="Close guided setup" onclick="closeSetupWizard()">×</button><span class="kicker">FIRST-TIME SETUP</span><h2>Let’s make your first backup</h2><p>Complete these four steps. You can leave and return at any time.</p><div class="wizard-step"><b>1. Add a database</b><span>Connect MySQL or MariaDB and test the credentials.</span><button class="secondary" onclick="closeSetupWizard();setView('connections')">Open Databases</button></div><div class="wizard-step"><b>2. Add storage</b><span>Choose local disk, FTP/FTPS, Synology, or cloud storage.</span><button class="secondary" onclick="closeSetupWizard();setView('storage')">Open Storage</button></div><div class="wizard-step"><b>3. Create a schedule</b><span>Select databases, time, retention, compression, and encryption.</span><button class="secondary" onclick="closeSetupWizard();setView('jobs')">Open Schedules</button></div><div class="wizard-step"><b>4. Run and verify</b><span>Run one backup manually, then check Backup history.</span><button class="secondary" onclick="closeSetupWizard();setView('runs')">Open History</button></div></div>`; wizard.classList.remove('hidden'); }
@@ -557,8 +590,8 @@ function renderDashboard() {
   if (running > 0) checks.unshift({ ready: true, title: `${running} backup${running === 1 ? '' : 's'} running now`, detail: 'Live progress is available from the process indicator.', view: 'processes' });
   $('#readiness').innerHTML = checks.slice(0, 4).map(check => `<button type="button" class="check-row ${check.ready ? 'is-ready' : 'is-attention'}" onclick="setView('${check.view}')"><span class="check-icon">${check.ready ? '✓' : '→'}</span><span><h4>${esc(check.title)}</h4><p>${esc(check.detail)}</p></span><span class="check-arrow">→</span></button>`).join('');
 }
-async function runJob(id) { try { await api(`/api/jobs/${encodeURIComponent(id)}/run`, { method: 'POST' }); await loadCollection('runs'); toast('Backup completed; history updated'); } catch (e) { await loadCollection('runs').catch(() => {}); toast(e.message, true); } }
-async function retryRun(id) { try { await api(`/api/runs/${encodeURIComponent(id)}/retry`, { method: 'POST' }); await loadCollection('runs'); toast('Backup retry started'); } catch (e) { toast(e.message, true); } }
+async function runJob(buttonOrId, id) { const targetId=id||buttonOrId; const button=id?buttonOrId:document.querySelector(`button[onclick="runJob('${targetId}')"]`); try { await withButtonBusy(button, async()=>{ await api(`/api/jobs/${encodeURIComponent(targetId)}/run`, { method: 'POST' }); await loadCollection('runs'); toast('Backup completed; history updated'); }, 'Starting backup…'); } catch (e) { await loadCollection('runs').catch(() => {}); toast(e.message, true); } }
+async function retryRun(buttonOrId, id) { const targetId=id||buttonOrId; const button=id?buttonOrId:document.querySelector(`button[onclick="retryRun('${targetId}')"]`); try { await withButtonBusy(button, async()=>{ await api(`/api/runs/${encodeURIComponent(targetId)}/retry`, { method: 'POST' }); await loadCollection('runs'); toast('Backup retry started'); }, 'Retrying backup…'); } catch (e) { toast(e.message, true); } }
 
 function isMobileSidebarViewport() {
   return window.matchMedia('(max-width: 767px)').matches;
@@ -762,14 +795,14 @@ if (themeToggle) {
   updateThemeButton();
 }
 initializeSidebar();
-document.getElementById('refresh-runs').onclick = () => { void loadCollection('runs'); };
-document.getElementById('refresh-processes').onclick = () => { void loadLiveProcesses(); };
+document.getElementById('refresh-runs').onclick = () => { const button = document.getElementById('refresh-runs'); void withButtonBusy(button, () => loadCollection('runs'), 'Refreshing…'); };
+document.getElementById('refresh-processes').onclick = () => { const button = document.getElementById('refresh-processes'); void withButtonBusy(button, () => loadLiveProcesses(), 'Refreshing…'); };
 
 async function viewJobRuns(id, refresh = false) { const host = document.getElementById(`job-runs-${id}`); const button = document.getElementById(`job-runs-button-${id}`); if (!host) return; if (!refresh && !host.classList.contains('hidden')) { host.classList.add('hidden'); if (button) button.textContent = 'View backups'; return; } host.classList.remove('hidden'); if (!vaultbackJobRunPages[id]) vaultbackJobRunPages[id] = { page: 1, pageSize: 25, search: '' }; const options = vaultbackJobRunPages[id]; host.innerHTML = '<div class="hint">Loading downloadable backups…</div>'; try { const params = new URLSearchParams({ page: String(options.page), pageSize: String(options.pageSize) }); if (options.search) params.set('search', options.search); const result = await api(`/api/jobs/${encodeURIComponent(id)}/runs?${params}`); if (button) button.textContent = 'Hide backups'; const first = result.total ? ((result.page - 1) * result.pageSize) + 1 : 0; const last = Math.min(result.total, result.page * result.pageSize); host.innerHTML = `<div class="job-runs-title">Downloadable backups · ${result.total} total</div><div class="list-toolbar"><input id="job-runs-search-${id}" type="search" placeholder="Search filename" value="${esc(options.search)}" autocomplete="off" /><span class="list-summary">Showing ${first}–${last}</span></div>${result.items.length ? `<div class="job-runs-list">${result.items.map(run => `<div class="job-run-row"><div><b>${esc(run.filename)}</b><small>Completed · ${fmtDate(run.startedAt)}</small></div><span>${fmtBytes(run.sizeBytes)} <button type="button" class="small-button" onclick="downloadRunArtifact(this, '${esc(run.id)}')">Download</button></span></div>`).join('')}</div>` : '<div class="empty">No downloadable backups match this search.</div>'}<div class="pagination"><div><button class="small-button" id="job-runs-prev-${id}" ${result.page <= 1 ? 'disabled' : ''}>Previous</button><b>Page ${result.page} of ${result.pageCount}</b><button class="small-button" id="job-runs-next-${id}" ${result.page >= result.pageCount ? 'disabled' : ''}>Next</button></div></div>`; document.getElementById(`job-runs-search-${id}`).oninput = event => { clearTimeout(vaultbackSearchTimers[`job-${id}`]); vaultbackSearchTimers[`job-${id}`] = setTimeout(() => { options.search = event.target.value.trim(); options.page = 1; void viewJobRuns(id, true); }, 300); }; document.getElementById(`job-runs-prev-${id}`).onclick = () => { options.page = Math.max(1, options.page - 1); void viewJobRuns(id, true); }; document.getElementById(`job-runs-next-${id}`).onclick = () => { options.page = Math.min(result.pageCount, options.page + 1); void viewJobRuns(id, true); }; } catch (e) { host.innerHTML = `<div class="callout">Unable to load backups: ${esc(e.message)}</div>`; } }
 
 async function exportFullConfig() { const password = $('#full-export-password').value; if (password.length < 12) { toast('Use an export password of at least 12 characters', true); return; } try { const response = await fetch('/api/settings/export/full', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-csrf-token': state.csrf }, body: JSON.stringify({ password }) }); if (!response.ok) { let message = 'Encrypted export failed'; try { const data = await response.json(); message = data.message || message; } catch {} throw new Error(message); } const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `vaultback-encrypted-export-${new Date().toISOString().slice(0, 10)}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); $('#full-export-password').value = ''; toast('Encrypted migration package exported'); } catch (e) { toast(e.message, true); } }
 async function importFullConfig() { const file = $('#full-import-file').files?.[0]; const password = $('#full-import-password').value; if (!file) { toast('Choose an encrypted VaultBack export package first', true); return; } if (password.length < 12) { toast('Enter the export password of at least 12 characters', true); return; } if (file.size > 60 * 1024 * 1024) { toast('The export package is too large', true); return; } try { const pkg = JSON.parse(await file.text()); const result = await api('/api/settings/import/full', { method: 'POST', body: JSON.stringify({ password, package: pkg }) }); $('#full-import-file').value = ''; $('#full-import-password').value = ''; toast(result.message || 'Import staged; restart VaultBack to activate it'); } catch (e) { toast(e.message, true); } }
-function bindMigrationControls() { if (document.body.dataset.migrationBound) return; document.body.dataset.migrationBound = '1'; $('#export-full').onclick = exportFullConfig; $('#import-full').onclick = importFullConfig; }
+function bindMigrationControls() { if (document.body.dataset.migrationBound) return; document.body.dataset.migrationBound = '1'; $('#export-full').onclick = () => void withButtonBusy($('#export-full'), exportFullConfig, 'Exporting…'); $('#import-full').onclick = () => void withButtonBusy($('#import-full'), importFullConfig, 'Importing…'); }
 async function restoreRunFromHistory(id) { return openRestoreModal(id); }
 function closeRestoreModal() { const modal = $('#restore-modal'); if (modal) modal.remove(); document.body.classList.remove('modal-open'); }
 function openRestoreModal(id) { const run = state.runs.find(item => item.id === id); if (!run) return toast('Backup run is no longer available', true); const canRename = run.databaseScope === 'selected' && Array.isArray(run.databases) && run.databases.length === 1; const root = $('#modal-root'); const connectionOptions = state.connections.map(connection => `<option value="${esc(connection.id)}" ${connection.id === run.databaseConnectionId ? 'selected' : ''}>${esc(connection.name)} · ${esc(connection.host)}:${esc(connection.port)}</option>`).join(''); root.insertAdjacentHTML('beforeend', `<section id="restore-modal" class="form-panel"><form class="form-shell" onsubmit="return false"><button type="button" class="modal-close" aria-label="Close restore dialog" onclick="closeRestoreModal()">×</button><h3>Restore backup</h3><p class="hint">Choose the destination server and whether the backup should replace its original database names or be restored under a new name.</p><div class="form-grid"><div class="field full"><label for="restore-connection">Destination database connection</label><select id="restore-connection">${connectionOptions}</select></div><div class="field full"><label for="restore-mode">Restore mode</label><select id="restore-mode"><option value="overwrite">Restore original database names (may overwrite data)</option><option value="new" ${canRename ? '' : 'disabled'}>Restore as a new database name${canRename ? '' : ' — only available for one-database backups'}</option></select></div><div id="restore-new-fields" class="field full hidden"><label for="restore-database-name">New database name</label><input id="restore-database-name" placeholder="example_restored" pattern="[A-Za-z0-9_]{1,64}" /><small class="hint">Letters, numbers, and underscores only.</small></div><div id="restore-warning" class="callout dependency-warning full"><b>Destructive action</b><br>This can overwrite the latest data in the destination database(s). Confirm that you have a recent backup and selected the correct destination.</div><label class="field full"><span><input id="restore-confirm" type="checkbox" /> I understand that existing destination data may be overwritten.</span></label></div><div class="form-actions"><button type="button" class="secondary" onclick="closeRestoreModal()">Cancel</button><button type="button" class="primary" id="restore-submit">Restore backup</button></div></form></section>`); document.body.classList.add('modal-open'); const mode = $('#restore-mode'); const fields = $('#restore-new-fields'); const warning = $('#restore-warning'); const update = () => { const renamed = mode.value === 'new'; fields.classList.toggle('hidden', !renamed); warning.innerHTML = renamed ? '<b>Check the name carefully</b><br>If the new database name already exists, restoring can overwrite it. Choose a new name or explicitly confirm the overwrite.' : '<b>Destructive action</b><br>This can overwrite the latest data in the destination database(s). Confirm that you have a recent backup and selected the correct destination.'; }; mode.onchange = update; update(); $('#restore-submit').onclick = async () => { const submit = $('#restore-submit'); const newName = $('#restore-database-name').value.trim(); if (mode.value === 'new' && !/^[A-Za-z0-9_]{1,64}$/.test(newName)) return toast('Enter a valid new database name', true); if (!$('#restore-confirm').checked) return toast('Confirm the restore warning before continuing', true); submit.disabled = true; try { const result = await api(`/api/runs/${encodeURIComponent(id)}/restore`, { method: 'POST', body: JSON.stringify({ connectionId: $('#restore-connection').value, mode: mode.value, databaseName: newName, overwriteConfirmed: true }) }); closeRestoreModal(); toast(result.message || `Restore completed on ${result.destination}`); } catch (e) { toast(e.message, true); submit.disabled = false; } }; }
@@ -1036,7 +1069,7 @@ var vaultbackBaseRenderSettings = function() {
     document.body.dataset.settingsBound = '1';
     $('#notification-provider').addEventListener('change', updateNotificationFields);
     $('#save-notifications').onclick = saveNotifications;
-    $('#export-config').onclick = exportSafeConfig;
+    $('#export-config').onclick = () => void withButtonBusy($('#export-config'), exportSafeConfig, 'Exporting…');
   }
   $('#new-user').onclick = () => openUserModal();
   $('#cancel-user').onclick = closeUserModal;
@@ -1048,7 +1081,7 @@ var vaultbackBaseRenderSettings = function() {
   $('#update-panel')?.classList.toggle('hidden', !isAdmin);
   if (!document.body.dataset.updateBound) {
     document.body.dataset.updateBound = '1';
-    $('#check-for-updates')?.addEventListener('click', () => void loadUpdateInfo(true));
+    $('#check-for-updates')?.addEventListener('click', () => { const button = $('#check-for-updates'); void withButtonBusy(button, () => loadUpdateInfo(true), 'Checking updates…'); });
     $('#install-update')?.addEventListener('click', () => void startUpdate());
   }
   renderUpdatePanel();
@@ -1117,8 +1150,8 @@ async function saveUser() {
   const form = $('#user-form');
   const submit = $('#save-user');
   if (!form || !submit) return;
-  submit.disabled = true;
   try {
+    await withButtonBusy(submit, async () => {
     const data = Object.fromEntries(new FormData(form));
     const editId = form.dataset.editId;
     if (!editId && String(data.password || '').length < 12) throw new Error('Use a password of at least 12 characters');
@@ -1129,10 +1162,9 @@ async function saveUser() {
     form.reset();
     closeUserModal();
     await loadCollection('users');
+    }, 'Saving user…');
   } catch (e) {
     toast(e.message, true);
-  } finally {
-    submit.disabled = false;
   }
 }
 
@@ -1142,7 +1174,9 @@ async function forceLogoutUser(id) {
   const confirmed = await appDialog({ title: `Force logout ${user.username}?`, message: 'All active sessions for this user will stop working immediately.', confirmText: 'Force logout', cancelText: 'Cancel', danger: true });
   if (!confirmed) return;
   try {
-    const result = await api(`/api/auth/users/${encodeURIComponent(user.id)}/logout-sessions`, { method: 'POST' });
+    const button = document.querySelector(`button[onclick="forceLogoutUser('${encodeURIComponent(user.id)}')"]`);
+    const result = await withButtonBusy(button, () => api(`/api/auth/users/${encodeURIComponent(user.id)}/logout-sessions`, { method: 'POST' }), 'Signing out…');
+    if (!result) return;
     toast(`${result.sessionsClosed} session${result.sessionsClosed === 1 ? '' : 's'} closed`);
     await loadCollection('users');
     await loadSessions();
@@ -1153,7 +1187,8 @@ async function forceLogoutLowerSessions() {
   const confirmed = await appDialog({ title: 'Force logout operators and viewers?', message: 'All active sessions belonging to operator and viewer accounts will stop working immediately.', confirmText: 'Force logout', cancelText: 'Cancel', danger: true });
   if (!confirmed) return;
   try {
-    const result = await api('/api/auth/sessions/logout-lower', { method: 'POST' });
+    const result = await withButtonBusy($('#logout-lower-sessions'), () => api('/api/auth/sessions/logout-lower', { method: 'POST' }), 'Signing out…');
+    if (!result) return;
     toast(`${result.sessionsClosed} session${result.sessionsClosed === 1 ? '' : 's'} closed`);
     await loadSessions();
   } catch (e) { toast(e.message, true); }
@@ -1164,7 +1199,8 @@ async function forceLogoutEveryone() {
   const confirmed = await appDialog({ title: 'Force logout everyone?', message: 'Every active session, including this administrator session, will stop working immediately. You will need to sign in again.', confirmText: 'Logout everyone', cancelText: 'Cancel', danger: true });
   if (!confirmed) return;
   try {
-    const result = await api('/api/auth/sessions/logout-all', { method: 'POST' });
+    const result = await withButtonBusy($('#logout-all-sessions'), () => api('/api/auth/sessions/logout-all', { method: 'POST' }), 'Signing out…');
+    if (!result) return;
     toast(`${result.sessionsClosed} session${result.sessionsClosed === 1 ? '' : 's'} closed`);
     setTimeout(() => location.reload(), 500);
   } catch (e) { toast(e.message, true); }
@@ -1173,14 +1209,12 @@ async function forceLogoutEveryone() {
 async function restartApplication() {
   const confirmed = await appDialog({ title: 'Restart VaultBack?', message: 'The application will briefly disconnect. Any backup currently running may be interrupted. Use this only when the service can be restarted by PM2, aaPanel, Docker, or another process manager.', confirmText: 'Restart application', cancelText: 'Cancel', danger: true });
   if (!confirmed) return;
-  const button = $('#restart-app');
-  if (button) button.disabled = true;
   try {
-    const result = await api('/api/settings/restart', { method: 'POST' });
+    const result = await withButtonBusy($('#restart-app'), () => api('/api/settings/restart', { method: 'POST' }), 'Restarting…');
+    if (!result) return;
     toast(result.message || 'Restart requested');
     setTimeout(() => location.reload(), 1600);
   } catch (e) {
-    if (button) button.disabled = false;
     toast(e.message, true);
   }
 }
@@ -1188,7 +1222,7 @@ async function restartApplication() {
 if ($('#new-user')) $('#new-user').onclick = () => openUserModal();
 if ($('#cancel-user')) $('#cancel-user').onclick = closeUserModal;
 if ($('#save-user')) $('#save-user').onclick = saveUser;
-if ($('#refresh-sessions')) $('#refresh-sessions').onclick = loadSessions;
+if ($('#refresh-sessions')) $('#refresh-sessions').onclick = () => void withButtonBusy($('#refresh-sessions'), loadSessions, 'Refreshing…');
 if ($('#logout-lower-sessions')) $('#logout-lower-sessions').onclick = forceLogoutLowerSessions;
 if ($('#logout-all-sessions')) $('#logout-all-sessions').onclick = forceLogoutEveryone;
 if ($('#restart-app')) $('#restart-app').onclick = restartApplication;
@@ -1207,7 +1241,7 @@ function renderSessionPagination() {
   });
 }
 
-if ($('#refresh-sessions')) $('#refresh-sessions').onclick = loadSessions;
+if ($('#refresh-sessions')) $('#refresh-sessions').onclick = () => void withButtonBusy($('#refresh-sessions'), loadSessions, 'Refreshing…');
 if ($('#sessions-page-size')) $('#sessions-page-size').onchange = event => {
   state.list.sessions.pageSize = Number(event.target.value);
   state.list.sessions.page = 1;
@@ -1306,7 +1340,7 @@ async function loadSessions() {
   finally { sessionsRefreshInFlight = false; }
 }
 
-if ($('#refresh-sessions')) $('#refresh-sessions').onclick = loadSessions;
+if ($('#refresh-sessions')) $('#refresh-sessions').onclick = () => void withButtonBusy($('#refresh-sessions'), loadSessions, 'Refreshing…');
 if ($('#api-usage-page-size')) $('#api-usage-page-size').onchange = event => {
   state.list.apiUsage = state.list.apiUsage || { page: 1, pageSize: 25 };
   state.list.apiUsage.pageSize = Number(event.target.value);
