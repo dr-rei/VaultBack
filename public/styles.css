@@ -5064,6 +5064,67 @@ html[data-theme="dark"] body .dependency-progress {
 }
 
 /* Software release/update panel */
+body .update-indicator {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid #d8ebe3;
+  border-radius: 10px;
+  background: var(--ui-teal-soft);
+  color: var(--ui-teal-dark);
+}
+
+body .update-indicator:hover,
+body .update-indicator:focus-visible {
+  border-color: var(--ui-teal);
+  background: #dff2ed;
+  color: var(--ui-teal-dark);
+}
+
+body .update-indicator-icon {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+body .update-indicator-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 2px solid var(--ui-surface);
+  border-radius: 50%;
+  background: #b64a4a;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+html[data-theme="dark"] body .update-indicator {
+  border-color: #32615f;
+  background: #173e40;
+  color: #a5ecd0;
+}
+
+html[data-theme="dark"] body .update-indicator:hover,
+html[data-theme="dark"] body .update-indicator:focus-visible {
+  border-color: #71d0ae;
+  background: #20514e;
+  color: #c8f5df;
+}
+
+html[data-theme="dark"] body .update-indicator-badge {
+  border-color: var(--ui-surface);
+}
+
 body .update-panel {
   margin-top: 22px;
 }

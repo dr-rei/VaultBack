@@ -1,5 +1,8 @@
 const state = { csrf: '', userId: '', isPrimary: false, version: '', connections: [], storage: [], jobs: [], runs: [], processes: [], sessions: [], sessionInfo: null, currentView: 'dashboard', dependencies: null, toolDiagnostics: null, toolDiagnosticsLoadedAt: 0, encryption: null, role: 'viewer', capacity: [], setupStatus: null, notifications: null, update: null, users: [], list: { connections: { page: 1, pageSize: 25, search: '' }, storage: { page: 1, pageSize: 25, search: '' }, jobs: { page: 1, pageSize: 25, search: '' }, runs: { page: 1, pageSize: 25, search: '', status: '' }, users: { page: 1, pageSize: 25, search: '' }, sessions: { page: 1, pageSize: 25 } }, meta: {} };
 let liveProcessTimer = null;
+var updateCheckTimer = null;
+var updateCheckInFlight = false;
+const updateCheckIntervalMs = 15 * 60 * 1000;
 var vaultbackCollectionEndpoints = { connections: '/api/connections', storage: '/api/storage', jobs: '/api/jobs', runs: '/api/runs', users: '/api/auth/users' };
 var vaultbackSearchTimers = {};
 var vaultbackJobRunPages = {};
@@ -42,9 +45,46 @@ function dependencyNotice(){if(!state.dependencies||state.dependencies.ok)return
 function renderDependencyBanner(){const el=$('#dependency-banner');if(!el)return;el.innerHTML=dependencyNotice();if(state.dependencies&&!state.dependencies.ok&&state.role==='admin'){const action=document.createElement('button');action.type='button';action.className='secondary dependency-setup-button';action.textContent='Set up database tools';action.onclick=()=>void openDependencySetup();el.firstElementChild?.appendChild(action)}el.classList.toggle('hidden',!state.dependencies||state.dependencies.ok)}
 function renderEncryptionBanner(){const el=$('#encryption-banner');if(!el)return;const issue=state.encryption?.status==='error';el.innerHTML=issue?`<div class="callout encryption-warning"><b>Encryption key problem</b><br>${esc(state.encryption.message)}<br><small>Restore the original key, then restart VaultBack. Do not delete the SQLite database.</small></div>`:'';el.classList.toggle('hidden',!issue)}
 async function loadHealthDetails(){try{const health=await api('/api/health/details');state.dependencies=health.dependencies||null;state.encryption=health.encryption||null;state.capacity=health.capacity||[]}catch{state.dependencies=null;state.encryption=null;state.capacity=[]}renderDependencyBanner();renderEncryptionBanner()}
-function ensureUpdatePanel() { if ($('#update-panel') || !$('#dependency-tools-panel')) return; $('#dependency-tools-panel').insertAdjacentHTML('beforebegin', '<div class="panel update-panel" id="update-panel"><div class="panel-head"><div><span class="kicker">SOFTWARE LIFECYCLE</span><h3>Software updates</h3></div><span id="update-state-badge" class="tag">Not checked</span></div><p class="hint">VaultBack checks a checksum-verified release manifest and downloads release packages over HTTPS. Your database credentials, encryption key, tools, and backup files are never replaced by an application update.</p><div id="update-status" class="update-status" aria-live="polite"><div class="empty">Checking release information…</div></div><div class="form-actions"><button type="button" class="secondary" id="check-for-updates">Check for updates</button><button type="button" class="primary hidden" id="install-update">Install update</button></div><p class="hint">Updates are administrator-controlled and require a working PM2, aaPanel, Docker, or systemd supervisor to start the new process after the graceful restart.</p></div>'); }
-function renderUpdatePanel() { const panel = $('#update-panel'); if (!panel) return; const info = state.update || {}; const badge = $('#update-state-badge'); const status = $('#update-status'); const install = $('#install-update'); if (badge) { badge.textContent = info.updateAvailable ? 'Update available' : info.status === 'failed' ? 'Check failed' : info.status === 'current' ? 'Up to date' : info.status === 'installed' ? 'Updated' : 'Not checked'; badge.className = `tag ${info.updateAvailable ? 'update-available' : ''}`; } if (status) status.innerHTML = info.error ? `<div class="callout dependency-warning">${esc(info.error)}</div>` : `<div class="update-summary"><div><span>Current version</span><b>${esc(info.currentVersion || '—')}</b></div><div><span>Latest version</span><b>${esc(info.latestVersion || 'Not checked')}</b></div><div><span>Channel</span><b>${esc(info.channel || 'stable')}</b></div><div><span>Last checked</span><b>${esc(info.checkedAt ? fmtDate(info.checkedAt) : 'Not checked')}</b></div></div>${info.updateAvailable ? `<p class="update-available-note">A newer release is ready. Review the release notes before installing.</p>` : info.status === 'installed' ? '<p class="update-success-note">The application reports that the release was installed successfully.</p>' : ''}`; if (install) { install.classList.toggle('hidden', !info.updateAvailable); install.disabled = !info.updateAvailable; } }
-async function loadUpdateInfo(check = false) { if (state.role !== 'admin') return; ensureUpdatePanel(); try { state.update = await api(check ? '/api/settings/update/check' : '/api/settings/update', check ? { method: 'POST', body: JSON.stringify({}) } : {}); renderUpdatePanel(); } catch (e) { state.update = { status: 'failed', error: e.message }; renderUpdatePanel(); } }
+function ensureUpdatePanel() {
+  if ($('#update-panel') || !$('#dependency-tools-panel')) return;
+  $('#dependency-tools-panel').insertAdjacentHTML('beforebegin', '<div class="panel update-panel" id="update-panel"><div class="panel-head"><div><span class="kicker">SOFTWARE LIFECYCLE</span><h3>Software updates</h3></div><span id="update-state-badge" class="tag">Not checked</span></div><p class="hint">VaultBack checks a checksum-verified release manifest and downloads release packages over HTTPS. Your database credentials, encryption key, tools, and backup files are never replaced by an application update.</p><div id="update-status" class="update-status" aria-live="polite"><div class="empty">Checking release information...</div></div><div class="form-actions"><button type="button" class="secondary" id="check-for-updates">Check for updates</button><button type="button" class="secondary hidden" id="view-release-notes">View release notes</button><button type="button" class="primary hidden" id="install-update">Install update</button></div><p class="hint">Updates are administrator-controlled and require a working PM2, aaPanel, Docker, or systemd supervisor to start the new process after the graceful restart.</p></div>');
+}
+
+function renderUpdatePanel() {
+  const panel = $('#update-panel');
+  if (!panel) return;
+  const info = state.update || {};
+  const badge = $('#update-state-badge');
+  const status = $('#update-status');
+  const notes = $('#view-release-notes');
+  const install = $('#install-update');
+  if (badge) {
+    badge.textContent = info.updateAvailable ? 'Update available' : info.status === 'failed' ? 'Check failed' : info.status === 'current' ? 'Up to date' : info.status === 'installed' ? 'Updated' : 'Not checked';
+    badge.className = `tag ${info.updateAvailable ? 'update-available' : ''}`;
+  }
+  if (status) status.innerHTML = info.error ? `<div class="callout dependency-warning">${esc(info.error)}</div>` : `<div class="update-summary"><div><span>Current version</span><b>${esc(info.currentVersion || '—')}</b></div><div><span>Latest version</span><b>${esc(info.latestVersion || 'Not checked')}</b></div><div><span>Channel</span><b>${esc(info.channel || 'stable')}</b></div><div><span>Last checked</span><b>${esc(info.checkedAt ? fmtDate(info.checkedAt) : 'Not checked')}</b></div></div>${info.updateAvailable ? `<p class="update-available-note">A newer release is ready. Review the release notes before installing.</p>` : info.status === 'installed' ? '<p class="update-success-note">The application reports that the release was installed successfully.</p>' : ''}`;
+  if (notes) {
+    notes.classList.toggle('hidden', !info.releaseNotesUrl);
+    notes.onclick = () => { if (info.releaseNotesUrl) window.open(info.releaseNotesUrl, '_blank', 'noopener,noreferrer'); };
+  }
+  if (install) { install.classList.toggle('hidden', !info.updateAvailable); install.disabled = !info.updateAvailable; }
+  renderUpdateIndicator();
+}
+
+async function loadUpdateInfo(check = false) {
+  if (state.role !== 'admin' || updateCheckInFlight) return;
+  updateCheckInFlight = true;
+  ensureUpdatePanel();
+  try {
+    state.update = await api(check ? '/api/settings/update/check' : '/api/settings/update', check ? { method: 'POST', body: JSON.stringify({}) } : {});
+    renderUpdatePanel();
+  } catch (e) {
+    state.update = { status: 'failed', error: e.message };
+    renderUpdatePanel();
+  } finally {
+    updateCheckInFlight = false;
+  }
+}
 async function startUpdate() { const button = $('#install-update'); if (!button) return; const confirmed = await appDialog({ title: 'Install VaultBack update?', message: 'VaultBack will download and verify the release, preserve data and credentials, then restart through the configured process manager. Do not start a backup during the update.', confirmText: 'Install update', cancelText: 'Cancel', danger: true }); if (!confirmed) return; button.disabled = true; try { const result = await api('/api/settings/update/install', { method: 'POST', body: JSON.stringify({}) }); state.update = { ...(state.update || {}), status: 'queued', updateAvailable: false, latestVersion: result.targetVersion }; renderUpdatePanel(); toast(result.message || 'Update started'); } catch (e) { toast(e.message, true); button.disabled = false; } }
 function closeDependencySetup(){const modal=$('#dependency-setup-modal');modal?.remove();if(!document.querySelector('.form-panel:not(.hidden), .user-form:not(.hidden), .confirm-dialog, .dependency-setup-modal'))document.body.classList.remove('modal-open')}
 function dependencyInstallMarkup(job){const percent=Number.isFinite(Number(job?.percent))?Math.max(0,Math.min(100,Number(job.percent))):0;const complete=job?.state==='completed';const failed=job?.state==='failed';return `<div class="dependency-install-status ${complete?'is-complete':''} ${failed?'is-failed':''}"><div class="dependency-install-status-head"><b>${esc(job?.message||'Preparing tool setup…')}</b><span>${complete?'Ready':failed?'Failed':`${percent}%`}</span></div><div class="dependency-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width:${percent}%"></span></div>${job?.totalBytes?`<small>${esc(fmtBytes(job.bytesDownloaded))} of ${esc(fmtBytes(job.totalBytes))}</small>`:''}${failed?`<div class="callout dependency-warning">${esc(job.error||job.message||'Tool setup failed')}</div>`:''}</div>`}
@@ -880,10 +920,48 @@ function initializeProcessIndicator() {
   });
 }
 
+function renderUpdateIndicator() {
+  const button = $('#update-indicator');
+  if (!button) return;
+  const info = state.update || {};
+  const available = state.role === 'admin' && Boolean(info.updateAvailable);
+  const label = available ? `Software update available: ${info.latestVersion || 'new version'}` : 'No software updates';
+  button.classList.toggle('hidden', !available);
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  const badge = $('#update-indicator-badge');
+  if (badge) badge.textContent = available ? '1' : '';
+}
+
+function initializeUpdateIndicator() {
+  const actions = document.querySelector('.top-actions');
+  if (actions && !$('#update-indicator')) {
+    actions.insertAdjacentHTML('afterbegin', '<button type="button" class="update-indicator hidden" id="update-indicator" aria-label="No software updates" title="No software updates"><span class="update-indicator-icon" aria-hidden="true">↟</span><span class="update-indicator-badge" id="update-indicator-badge" aria-hidden="true"></span><span class="sr-only">Software update available</span></button>');
+  }
+  $('#update-indicator')?.addEventListener('click', () => setView('settings'));
+  renderUpdateIndicator();
+}
+
+function syncUpdateCheckPolling() {
+  const active = state.csrf && state.role === 'admin';
+  if (!active) {
+    if (updateCheckTimer) clearInterval(updateCheckTimer);
+    updateCheckTimer = null;
+    return;
+  }
+  if (!updateCheckTimer) {
+    updateCheckTimer = setInterval(() => {
+      if (!document.hidden) void loadUpdateInfo(true);
+    }, updateCheckIntervalMs);
+  }
+}
+
 async function loadAll() {
   await Promise.all(['connections', 'storage', 'jobs', 'runs'].map(loadCollection));
   if (state.role === 'admin') await loadCollection('users'); else state.users = [];
   updateRoleUi();
+  syncUpdateCheckPolling();
+  if (state.role === 'admin' && !state.update) void loadUpdateInfo();
   if (state.currentView === 'sessions' && state.role !== 'admin') { window.history.replaceState({}, '', '/'); setView('not-found', { history: false }); return; }
   renderDashboard();
   if (state.currentView === 'connections') renderConnections();
@@ -898,6 +976,7 @@ async function loadAll() {
 }
 
 initializeProcessIndicator();
+initializeUpdateIndicator();
 
 // The effective Settings renderer is defined later in this legacy bundle, so
 // bind the user modal controls after all renderer definitions have loaded.
