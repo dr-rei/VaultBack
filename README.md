@@ -108,7 +108,7 @@ The command prompts for a new username and password, then asks you to type `RESE
 ## Feature details
 
 - Scheduled MySQL/MariaDB backups with all-database or live database checklist selection.
-- GZIP or ZIP compression, per-database and per-table ZIP layouts, optional AES-256-GCM backup-file encryption, retention rotation, checksums, and archive/content verification.
+- GZIP or ZIP compression, per-database and per-table ZIP layouts, selectable views, stored procedures/functions, triggers, and scheduled events, optional AES-256-GCM backup-file encryption, retention rotation, checksums, and archive/content verification.
 - Local, FTP/FTPS, WebDAV/Synology, Google Drive, and OneDrive destinations. Each new schedule stores its backups in a dedicated `schedule-<schedule-id>` folder within the selected target, so separate schedules never mix their files. Existing backups created before this behavior remain supported from the target root.
 - Google and Microsoft OAuth refresh-token support for unattended cloud schedules.
 - Backup success/failure/capacity notifications through Discord, Telegram, or HTTPS webhooks.
@@ -296,9 +296,9 @@ Schedules support three layouts:
 
 - **Single SQL file** keeps the original `.sql`, `.sql.gz`, or optional `.zip` artifact behavior.
 - **One SQL file per database** creates a ZIP containing `DatabaseName/DatabaseName.sql` for every selected or visible database.
-- **One SQL file per table** creates a ZIP containing `DatabaseName/TableName.sql` for every base table in every selected or visible database. Views are skipped in this layout because MariaDB/MySQL clients do not reliably dump a view through the table-specific command; single-file and per-database layouts continue to include views.
+- **One SQL file per table** creates a ZIP containing `DatabaseName/TableName.sql` for every base table in every selected or visible database. In the schedule form, you can also include views, stored procedures/functions, triggers, and scheduled events. Selected non-table objects are written to `DatabaseName/_database-objects.sql` after the table files so restore can create dependent objects after their tables exist. Indexes are included automatically in each table definition.
 
-The split layouts always use ZIP compression. ZIP backups can be downloaded, verified, and restored through the normal Backup history workflow. Existing single-file schedules remain unchanged.
+The split layouts always use ZIP compression. Single-file and per-database layouts include the standard database objects automatically. ZIP backups can be downloaded, verified, and restored through the normal Backup history workflow. Existing schedules keep their previous object-selection behavior until edited.
 
 ### Backup folder layout
 
@@ -469,7 +469,7 @@ Do not publish the container directly to the public internet. Use an HTTPS rever
 7. Open **Storage targets** and add a local, FTP/FTPS, WebDAV/Synology, Google Drive, or OneDrive destination.
 8. Open **Schedules** and choose the database connection and storage target.
 9. Choose **All databases** or **Selected databases**. Selected mode loads a checklist from the live database connection.
-10. Choose a backup layout and configure cron expression, timezone, compression, filename prefix, and retention count. The per-table layout creates one combined SQL file per base table inside the ZIP.
+10. Choose a backup layout and configure cron expression, timezone, compression, filename prefix, retention count, and database-object options. The per-table layout creates one SQL file per base table inside the ZIP and can add views, stored procedures/functions, triggers, and scheduled events in a separate database-objects file.
 11. Save the schedule and use **Run now** for an initial backup test.
 12. Confirm the artifact exists at the destination and inspect **Backup history**.
 

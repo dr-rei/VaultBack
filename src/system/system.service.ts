@@ -137,7 +137,7 @@ export class SystemService {
   exportSafeConfig() {
     const connections = this.store.db.prepare('SELECT id,name,engine,host,port,username,database_name as database,database_scope as databaseScope,database_names as databases,ssl,created_at as createdAt FROM database_connections ORDER BY name').all();
     const storage = this.store.db.prepare('SELECT id,name,type,created_at as createdAt FROM storage_targets ORDER BY name').all();
-    const jobs = this.store.db.prepare('SELECT id,name,database_connection_id as databaseConnectionId,storage_target_id as storageTargetId,database_scope as databaseScope,database_names as databases,backup_layout as backupLayout,cron_expression as cronExpression,timezone,enabled,compression,backup_encryption as backupEncryption,retention_count as retentionCount,filename_prefix as filenamePrefix,created_at as createdAt FROM backup_jobs ORDER BY name').all();
+    const jobs = this.store.db.prepare('SELECT id,name,database_connection_id as databaseConnectionId,storage_target_id as storageTargetId,database_scope as databaseScope,database_names as databases,backup_layout as backupLayout,backup_objects as backupObjects,cron_expression as cronExpression,timezone,enabled,compression,backup_encryption as backupEncryption,retention_count as retentionCount,filename_prefix as filenamePrefix,created_at as createdAt FROM backup_jobs ORDER BY name').all();
     return { exportedAt: new Date().toISOString(), warning: 'Secrets are intentionally excluded. Re-enter credentials after importing.', connections, storage, jobs };
   }
 

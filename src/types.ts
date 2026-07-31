@@ -1,6 +1,13 @@
 export type DatabaseEngine = 'mysql' | 'mariadb';
 export type StorageType = 'local' | 'ftp' | 'webdav' | 'google-drive' | 'onedrive';
 
+export interface BackupObjectOptions {
+  views: boolean;
+  routines: boolean;
+  triggers: boolean;
+  events: boolean;
+}
+
 export interface DatabaseConnection {
   id: string;
   name: string;
@@ -32,6 +39,7 @@ export interface BackupJob {
   databaseScope: 'all' | 'selected';
   databases: string[];
   backupLayout: 'single' | 'database' | 'table';
+  backupObjects: BackupObjectOptions;
   cronExpression: string;
   timezone: string;
   enabled: boolean;
