@@ -180,6 +180,7 @@ Use the **PM2 Project** tab shown in aaPanel:
 | Project Name | `vaultback` |
 | Node Version | Node.js 22 or newer |
 | Startup File | `dist/main.js` |
+| Config File (if aaPanel exposes it) | `/www/wwwroot/vaultback/ecosystem.config.cjs` |
 | Run Directory | `/www/wwwroot/vaultback` |
 | Cluster | `1` |
 | Memory Limit | `512 MB` or `1024 MB` |
@@ -201,6 +202,12 @@ sudo -u www -H env "PATH=$PATH" pm2 startup
 
 Keep **Auto Restart** enabled. The GUI **Restart application** action gracefully stops the Node process and depends on PM2/aaPanel to start it again. A process started directly with `npm start` will shut down and will not self-relaunch.
 
+When aaPanel offers a **Config File** field under **More settings**, select
+`ecosystem.config.cjs`. This applies VaultBack's explicit PM2 log paths. If
+your aaPanel version does not expose that field, start the project once with
+the terminal command above; do not create a second PM2 process with the same
+name.
+
 Run the command printed by `pm2 startup` once with the elevated permissions requested by aaPanel. This makes the process return after a server reboot.
 
 ### 6. Test the private application port
@@ -212,6 +219,14 @@ pm2 status
 pm2 logs vaultback --lines 50
 curl -I http://127.0.0.1:3010/
 ~~~
+
+The included `ecosystem.config.cjs` explicitly writes PM2 stdout and stderr to
+`data/logs/vaultback-out.log` and `data/logs/vaultback-error.log`. The `data/`
+directory is runtime data and is ignored by Git. If the aaPanel project was
+created before this configuration was installed, restart it once from the
+aaPanel GUI or run `pm2 restart vaultback --update-env` as the same `www` user;
+PM2 will then create the log files. Update progress and updater errors are
+recorded separately in `data/update-status.json`.
 
 The application should remain bound to `127.0.0.1` when a domain reverse proxy is used.
 

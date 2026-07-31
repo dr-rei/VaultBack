@@ -228,6 +228,16 @@ export class SystemService {
   }
 
   async checkForUpdate() {
+    try {
+      return await this.checkForUpdateRemote();
+    } catch (error: any) {
+      const message = String(error?.message || error).slice(0, 500);
+      this.writeUpdateStatus({ state: 'failed', checkedAt: new Date().toISOString(), error: message });
+      throw error;
+    }
+  }
+
+  private async checkForUpdateRemote() {
     const manifestUrl = this.updateManifestUrl();
     if (!/^https:\/\//i.test(manifestUrl)) throw new BadRequestException('UPDATE_MANIFEST_URL must use HTTPS.');
     const response = await fetch(manifestUrl, { redirect: 'follow', signal: AbortSignal.timeout(10000), headers: { accept: 'application/json', 'user-agent': `VaultBack/${this.appVersion()}` } });
@@ -246,10 +256,10 @@ export class SystemService {
   startUpdate(userId: string) {
     const saved = this.readUpdateStatus(); const currentVersion = this.appVersion(); const targetVersion = String(saved.latestVersion || '');
     if (!saved.artifact || !targetVersion || this.compareVersions(targetVersion, currentVersion) <= 0) throw new BadRequestException('Check for a newer release before starting an update.');
-    const script = path.join(process.cwd(), 'scripts', 'update.mjs'); const configuredProtocol = String(process.env.APP_PROTOCOL || 'http').toLowerCase(); const protocol = configuredProtocol === 'https' || configuredProtocol === 'both' ? 'https' : 'http'; const port = configuredProtocol === 'both' ? Number(process.env.HTTPS_PORT || 3443) : Number(process.env.PORT || 3010); const healthUrl = `${protocol}://127.0.0.1:${port}/api/health`;
-    const child = spawn(process.execPath, [script, '--app-root', process.cwd(), '--data-dir', this.store.dataDir, '--version', targetVersion, '--url', String(saved.artifact.url), '--sha256', String(saved.artifact.sha256), '--health-url', healthUrl, ...(process.env.UPDATE_PM2_APP ? ['--pm2-app', String(process.env.UPDATE_PM2_APP)] : [])], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
-    child.once('error', error => this.writeUpdateStatus({ state: 'failed', error: String(error.message || error).slice(0, 300) })); child.unref();
+    const script = path.join(process.cwd(), 'scripts', 'update.mjs'); const configuredProtocol = String(process.env.APP_PROTOCOL || 'http').toLowerCase(); const protocol = configuredProtocol === 'https' || configuredProtocol === 'both' ? 'https' : 'http'; const port = configuredProtocol === 'both' ? Number(process.env.HTTPS_PORT || 3443) : Number(process.env.PORT || 3010); const healthUrl = `${protocol}://127.0.0.1:${port}/api/health`; const healthHost = String(process.env.APP_DOMAIN || '127.0.0.1').split(',')[0].trim() || '127.0.0.1';
     this.writeUpdateStatus({ state: 'queued', progress: 0, targetVersion, error: '' }); this.audit(userId, 'system.update.start', undefined, targetVersion);
+    const child = spawn(process.execPath, [script, '--app-root', process.cwd(), '--data-dir', this.store.dataDir, '--version', targetVersion, '--url', String(saved.artifact.url), '--sha256', String(saved.artifact.sha256), '--health-url', healthUrl, '--health-host', healthHost, ...(process.env.UPDATE_PM2_APP ? ['--pm2-app', String(process.env.UPDATE_PM2_APP)] : [])], { cwd: process.cwd(), detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
+    child.once('error', error => this.writeUpdateStatus({ state: 'failed', error: String(error.message || error).slice(0, 300) })); child.unref();
     const timer = setTimeout(() => { try { process.kill(process.pid, 'SIGTERM'); } catch (error: any) { this.logger.error(`Update shutdown failed: ${String(error?.message || error)}`); } }, 900); timer.unref?.();
     return { ok: true, state: 'queued', targetVersion, message: 'Update started. The application will restart through its configured process manager.' };
   }

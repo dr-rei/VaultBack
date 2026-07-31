@@ -823,23 +823,40 @@ html[data-theme="dark"] body .auth-note {
   color: #9bb0b8;
 }
 
-body .auth-feedback {
+body .auth-card .auth-feedback {
   display: none;
-  margin-top: 16px;
-  padding: 11px 13px;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 15px 0 0;
+  padding: 12px 13px;
   border: 1px solid #e4b8b2;
   border-radius: 10px;
   background: #fff1ef;
   color: #9d3f3b;
   font-size: 12px;
+  font-weight: 700;
   line-height: 1.45;
 }
 
-body .auth-feedback.show {
-  display: block;
+body .auth-card .auth-feedback::before {
+  display: grid;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: #b64a4a;
+  color: #fff;
+  content: '!';
+  font-size: 11px;
+  font-weight: 900;
 }
 
-html[data-theme="dark"] body .auth-feedback {
+body .auth-card .auth-feedback.show {
+  display: flex;
+}
+
+html[data-theme="dark"] body .auth-card .auth-feedback {
   border-color: #8b464b;
   background: #4a292d;
   color: #ffd4d0;
@@ -4699,7 +4716,8 @@ html[data-theme="dark"] body .wizard-step b {
 }
 
 .settings-restart-panel {
-  margin-bottom: 20px;
+  margin-top: var(--surface-gap, 18px);
+  margin-bottom: var(--surface-gap, 18px);
 }
 
 .settings-restart-panel .session-restart-block {

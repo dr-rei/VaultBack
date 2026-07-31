@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
@@ -15,13 +17,26 @@ function argument(name, fallback = '') {
   return index >= 0 ? String(args[index + 1] || fallback) : fallback;
 }
 
+function parseEnvFile(file) {
+  if (!fs.existsSync(file)) return {};
+  const values = {};
+  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!match || match[1].startsWith('#')) continue;
+    values[match[1]] = match[2].replace(/^(['"])(.*)\1$/, '$2');
+  }
+  return values;
+}
+
 const appRoot = path.resolve(argument('app-root', process.cwd()));
+const envFile = { ...parseEnvFile(path.join(appRoot, '.env')), ...process.env };
 const dataDir = path.resolve(argument('data-dir', path.join(appRoot, 'data')));
 const targetVersion = argument('version').replace(/^v/, '');
 const updateUrl = argument('url');
 const expectedHash = argument('sha256').toLowerCase();
 const healthUrl = argument('health-url');
-const pm2App = argument('pm2-app');
+const healthHost = argument('health-host', String(envFile.APP_DOMAIN || '127.0.0.1').split(',')[0].trim() || '127.0.0.1');
+const pm2App = argument('pm2-app', String(envFile.UPDATE_PM2_APP || 'vaultback').trim() || 'vaultback');
 const statusFile = path.join(dataDir, 'update-status.json');
 const workRoot = path.join(dataDir, 'tmp', 'release-update');
 
@@ -86,21 +101,32 @@ function locateRelease(stage) {
   return candidate ? path.join(stage, candidate.name) : '';
 }
 
-async function waitForHealthDown() {
-  if (!healthUrl) return;
-  const deadline = Date.now() + 30000;
-  while (Date.now() < deadline) {
-    try { await fetch(healthUrl, { signal: AbortSignal.timeout(800) }); } catch { return; }
-    await new Promise(resolve => setTimeout(resolve, 400));
-  }
+function probeHealth() {
+  return new Promise(resolve => {
+    if (!healthUrl) return resolve(false);
+    const target = new URL(healthUrl);
+    const client = target.protocol === 'https:' ? https : http;
+    const request = client.request(target, {
+      method: 'GET',
+      headers: { host: healthHost },
+      rejectUnauthorized: false,
+      timeout: 1500
+    }, response => {
+      response.resume();
+      resolve(response.statusCode >= 200 && response.statusCode < 300);
+    });
+    request.on('timeout', () => request.destroy());
+    request.on('error', () => resolve(false));
+    request.end();
+  });
 }
 
-async function waitForHealthUp() {
+async function waitForHealth(expectedUp) {
   if (!healthUrl) return true;
-  const deadline = Date.now() + 45000;
+  const deadline = Date.now() + (expectedUp ? 45000 : 30000);
   while (Date.now() < deadline) {
-    try { const response = await fetch(healthUrl, { signal: AbortSignal.timeout(1500) }); if (response.ok) return true; } catch {}
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    if (await probeHealth() === expectedUp) return true;
+    await new Promise(resolve => setTimeout(resolve, expectedUp ? 1000 : 400));
   }
   return false;
 }
@@ -138,25 +164,30 @@ async function main() {
   if (!releaseRoot || !fs.existsSync(path.join(releaseRoot, 'dist', 'main.js')) || !fs.existsSync(path.join(releaseRoot, 'public', 'index.html'))) return fail('Release package is missing required application files.');
   const releasePackage = JSON.parse(fs.readFileSync(path.join(releaseRoot, 'package.json'), 'utf8'));
   if (String(releasePackage.version || '').replace(/^v/, '') !== targetVersion) return fail('Release package version does not match the manifest.');
-  writeStatus('stopping', { progress: 78 });
-  if (pm2App) run('pm2', ['stop', pm2App]);
-  await waitForHealthDown();
   fs.mkdirSync(rollback, { recursive: true });
   copyManaged(appRoot, rollback);
+  let stopped = false;
   try {
+    writeStatus('stopping', { progress: 78 });
+    if (pm2App) {
+      run('pm2', ['describe', pm2App], { stdio: 'ignore' });
+      run('pm2', ['stop', pm2App]);
+      stopped = true;
+      if (!await waitForHealth(false)) throw new Error('The application did not stop cleanly before the update.');
+    }
     writeStatus('installing', { progress: 82 });
     copyManaged(releaseRoot, appRoot, true);
     run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: appRoot, stdio: 'ignore' });
     if (pm2App) {
       writeStatus('restarting', { progress: 95 });
       run('pm2', ['restart', pm2App, '--update-env']);
-      if (!await waitForHealthUp()) throw new Error('The updated application did not pass its health check.');
+      if (!await waitForHealth(true)) throw new Error(`The updated application did not pass its health check at ${healthUrl}.`);
     }
   } catch (error) {
     writeStatus('rolling_back', { progress: 96, error: String(error?.message || error).slice(0, 500) });
     copyManaged(rollback, appRoot, true);
     try { run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: appRoot, stdio: 'ignore' }); } catch {}
-    if (pm2App) {
+    if (pm2App && stopped) {
       try { run('pm2', ['restart', pm2App, '--update-env']); } catch {}
     }
     throw new Error(`Update failed and the previous release was restored: ${String(error?.message || error).slice(0, 380)}`);
