@@ -297,6 +297,10 @@ export class BackupService {
 
   private getConnection(id: string): DatabaseConnection { this.store.assertEncryptionHealthy(); const row = this.store.db.prepare('SELECT * FROM database_connections WHERE id=?').get(id) as any; if (!row) throw new Error('Database connection not found'); const databaseScope = row.database_scope === 'all' ? 'all' : 'selected'; let databases: string[] = []; try { databases = JSON.parse(String(row.database_names || '[]')); } catch {} if (databaseScope === 'selected' && !databases.length && row.database_name) databases = String(row.database_name).split(',').map(value => value.trim()).filter(Boolean); return { id: row.id, name: row.name, engine: row.engine, host: row.host, port: row.port, username: row.username, password: this.store.decrypt(row.password_enc), database: databaseScope === 'all' ? '*' : databases[0], databaseScope, databases, ssl: Boolean(row.ssl), createdAt: row.created_at }; }
   private safeDatabaseName(value: unknown) { const name = String(value || '').trim(); if (!/^[A-Za-z0-9_]{1,64}$/.test(name)) throw new BadRequestException('New database name may contain only letters, numbers, and underscores'); return name; }
+  // These schemas expose server metadata rather than user tables. Splitting
+  // them into table files makes MariaDB try to serialize internal views such
+  // as information_schema.* and fail with the misleading ds_view error.
+  private isVirtualDatabase(database: string) { return new Set(['information_schema', 'performance_schema', 'sys']).has(String(database).trim().toLowerCase()); }
   private quoteIdentifier(value: string) { return `\`${value.replace(/`/g, '``')}\``; }
   private rewriteDatabaseName(input: string, source: string, target: string, output: string) { const sourceQuoted = this.quoteIdentifier(source); const targetQuoted = this.quoteIdentifier(target); const content = fs.readFileSync(input, 'utf8').split(/\r?\n/).map(line => /^(\s*)(CREATE\s+DATABASE|USE)\b/i.test(line) ? line.split(sourceQuoted).join(targetQuoted) : line).join('\n'); fs.writeFileSync(output, content, { encoding: 'utf8', mode: 0o600 }); }
   private executeMysql(connection: DatabaseConnection, statement: string) { return this.spawnMysql(connection, [`--execute=${statement}`]); }
@@ -379,6 +383,7 @@ export class BackupService {
     } catch (error: any) { return { status: 'failed', message: String(error?.message || error).slice(0, 500), details: {} }; }
   }
   private async listAvailableTables(connection: DatabaseConnection, database: string) {
+    if (this.isVirtualDatabase(database)) return { tables: [], views: [] };
     const [rows] = await this.withNativeDatabaseConnection<any>(connection, client => client.query('SELECT TABLE_NAME AS tableName, TABLE_TYPE AS tableType FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME', [database]));
     const tables: string[] = [];
     const views: string[] = [];
@@ -418,6 +423,7 @@ export class BackupService {
     return definitions.length;
   }
   private async dumpDatabaseObjects(connection: DatabaseConnection, database: string, available: { tables: string[]; views: string[] }, objects: BackupObjectOptions, output: string, processId?: string) {
+    if (this.isVirtualDatabase(database)) return;
     // Do not pass views to mariadb-dump. Its view serializer can fail with a
     // misleading "ds_view" error on valid MariaDB/MySQL views. Tables,
     // routines, and events remain handled by the native dump utility.
