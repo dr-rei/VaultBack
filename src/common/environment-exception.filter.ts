@@ -1,5 +1,5 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, Logger } from '@nestjs/common';
-import { FastifyReply, FastifyRequest } from 'fastify';
+import { FastifyRequest } from 'fastify';
 
 @Catch()
 export class EnvironmentExceptionFilter implements ExceptionFilter {
@@ -10,8 +10,8 @@ export class EnvironmentExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost) {
     const context = host.switchToHttp();
     const request = context.getRequest<FastifyRequest>();
-    const reply = context.getResponse<FastifyReply>();
-    if (reply.sent) return;
+    const reply: any = context.getResponse();
+    if (reply.sent || reply.writableEnded) return;
 
     const isHttpException = exception instanceof HttpException;
     const statusCode = isHttpException ? exception.getStatus() : 500;
@@ -23,8 +23,17 @@ export class EnvironmentExceptionFilter implements ExceptionFilter {
       this.logger.error(`[${requestId}] ${request.method} ${request.url}: ${actualMessage}`, exception instanceof Error ? exception.stack : undefined);
     }
 
+    const send = (status: number, payload: unknown) => {
+      if (typeof reply.status === 'function') return reply.status(status).send(payload);
+      const raw = reply.raw || reply;
+      raw.statusCode = status;
+      if (typeof raw.setHeader === 'function') raw.setHeader('content-type', 'application/json; charset=utf-8');
+      if (typeof raw.end === 'function') return raw.end(JSON.stringify(payload));
+      return undefined;
+    };
+
     if (serverError && this.production) {
-      return reply.status(statusCode).send({
+      return send(statusCode, {
         statusCode,
         error: 'Internal Server Error',
         message: 'Internal server error',
@@ -33,14 +42,14 @@ export class EnvironmentExceptionFilter implements ExceptionFilter {
 
     if (isHttpException) {
       const response = exception.getResponse();
-      return reply.status(statusCode).send(typeof response === 'object' ? response : {
+      return send(statusCode, typeof response === 'object' ? response : {
         statusCode,
         error: exception.name,
         message: response,
       });
     }
 
-    return reply.status(500).send({
+    return send(500, {
       statusCode: 500,
       error: 'Internal Server Error',
       message: actualMessage,
