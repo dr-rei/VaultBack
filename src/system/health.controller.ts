@@ -3,6 +3,7 @@ import { HealthCheck, HealthCheckService, HealthIndicator, HealthIndicatorResult
 import { DatabaseService } from '../database/database.service';
 import { SystemService } from './system.service';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiExampleResponse } from '../common/swagger-responses';
 
 @Injectable()
 export class VaultbackHealthIndicator extends HealthIndicator {
@@ -42,6 +43,7 @@ export class HealthController {
   @Get('ready')
   @HealthCheck()
   @ApiOperation({ summary: 'Check database, encryption, and capacity readiness.' })
+  @ApiExampleResponse(200, 'Readiness report.', { status: 'ok', info: { database: { status: 'up' }, encryption: { status: 'up', checkedRecords: 12 }, capacity: { status: 'up', locations: [] } }, error: {}, details: { database: { status: 'up' }, encryption: { status: 'up', checkedRecords: 12 }, capacity: { status: 'up', locations: [] } } })
   readiness() {
     return this.health.check([
       () => this.indicator.checkDatabase('database'),
@@ -52,9 +54,11 @@ export class HealthController {
 
   @Get()
   @ApiOperation({ summary: 'Check whether the service is alive.' })
+  @ApiExampleResponse(200, 'Liveness response.', { ok: true, service: 'vaultback', version: '0.1.27', time: '2026-08-03T07:30:00.000Z' })
   liveness() { return { ok: true, service: 'vaultback', version: this.system.getAppVersion(), time: new Date().toISOString() }; }
 
   @Get('live')
   @ApiOperation({ summary: 'Alias for the liveness check.' })
+  @ApiExampleResponse(200, 'Liveness response.', { ok: true, service: 'vaultback', version: '0.1.27', time: '2026-08-03T07:30:00.000Z' })
   live() { return this.liveness(); }
 }
