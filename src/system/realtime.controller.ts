@@ -3,8 +3,11 @@ import { FastifyReply, FastifyRequest } from 'fastify';
 import { RealtimeService } from './realtime.service';
 import { AuthService } from '../auth/auth.service';
 import { SystemService } from './system.service';
+import { ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 @Controller('api')
+@ApiTags('Realtime events')
+@ApiCookieAuth('vb_session')
 export class RealtimeController {
   constructor(private readonly realtime: RealtimeService, private readonly auth: AuthService, private readonly system: SystemService) {
     this.realtime.registerSnapshotProvider('sessions', context => this.auth.listActiveSessions({ cookies: { vb_session: context.sessionToken }, query: { page: context.query.sessionPage || '1', pageSize: context.query.sessionPageSize || '25' } } as any));
@@ -12,7 +15,9 @@ export class RealtimeController {
     this.realtime.registerSnapshotProvider('updates', () => this.system.updateInfo());
   }
 
-  @Get('events') events(@Req() request: FastifyRequest, @Res() reply: FastifyReply) {
+  @Get('events')
+  @ApiOperation({ summary: 'Open the authenticated server-sent event stream.' })
+  events(@Req() request: FastifyRequest, @Res() reply: FastifyReply) {
     const session = this.auth.requireSession(request);
     const rawTopics = String((request as any).query?.topics || '').split(',').map(value => value.trim()).filter(Boolean);
     const requestQuery = (request as any).query || {};

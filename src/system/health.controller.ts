@@ -2,6 +2,7 @@ import { Controller, Get, Injectable } from '@nestjs/common';
 import { HealthCheck, HealthCheckService, HealthIndicator, HealthIndicatorResult } from '@nestjs/terminus';
 import { DatabaseService } from '../database/database.service';
 import { SystemService } from './system.service';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
 
 @Injectable()
 export class VaultbackHealthIndicator extends HealthIndicator {
@@ -34,11 +35,13 @@ export class VaultbackHealthIndicator extends HealthIndicator {
 }
 
 @Controller('api/health')
+@ApiTags('Health checks')
 export class HealthController {
   constructor(private readonly health: HealthCheckService, private readonly indicator: VaultbackHealthIndicator, private readonly system: SystemService) {}
 
   @Get('ready')
   @HealthCheck()
+  @ApiOperation({ summary: 'Check database, encryption, and capacity readiness.' })
   readiness() {
     return this.health.check([
       () => this.indicator.checkDatabase('database'),
@@ -48,8 +51,10 @@ export class HealthController {
   }
 
   @Get()
+  @ApiOperation({ summary: 'Check whether the service is alive.' })
   liveness() { return { ok: true, service: 'vaultback', version: this.system.getAppVersion(), time: new Date().toISOString() }; }
 
   @Get('live')
+  @ApiOperation({ summary: 'Alias for the liveness check.' })
   live() { return this.liveness(); }
 }
