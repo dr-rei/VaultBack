@@ -2,6 +2,7 @@ const state = { csrf: '', userId: '', isPrimary: false, version: '', connections
 let liveProcessTimer = null;
 var updateCheckTimer = null;
 var updateCheckInFlight = false;
+var updateInstallInFlight = false;
 let realtimeSource = null;
 var vaultbackCollectionEndpoints = { connections: '/api/connections', storage: '/api/storage', jobs: '/api/jobs', runs: '/api/runs', users: '/api/auth/users' };
 var vaultbackSearchTimers = {};
@@ -99,7 +100,15 @@ function renderUpdatePanel() {
     notes.classList.toggle('hidden', !info.releaseNotesUrl);
     notes.onclick = () => { if (info.releaseNotesUrl) window.open(info.releaseNotesUrl, '_blank', 'noopener,noreferrer'); };
   }
-  if (install) { install.classList.toggle('hidden', !info.updateAvailable); install.disabled = !info.updateAvailable; }
+  if (install) {
+    if (updateInstallInFlight) {
+      install.classList.remove('hidden');
+      install.disabled = true;
+    } else {
+      install.classList.toggle('hidden', !info.updateAvailable);
+      install.disabled = !info.updateAvailable;
+    }
+  }
   renderUpdateIndicator();
 }
 
@@ -117,7 +126,54 @@ async function loadUpdateInfo(check = false) {
     updateCheckInFlight = false;
   }
 }
-async function startUpdate() { const button = $('#install-update'); if (!button) return; const confirmed = await appDialog({ title: 'Install VaultBack update?', message: 'VaultBack will download and verify the release, preserve data and credentials, then restart through the configured process manager. Do not start a backup during the update.', confirmText: 'Install update', cancelText: 'Cancel', danger: true }); if (!confirmed) return; try { const result = await withButtonBusy(button, () => api('/api/settings/update/install', { method: 'POST', body: JSON.stringify({}) }), 'Installing update…'); if (!result) return; state.update = { ...(state.update || {}), status: 'queued', updateAvailable: false, latestVersion: result.targetVersion }; renderUpdatePanel(); toast(result.message || 'Update started'); } catch (e) { toast(e.message, true); } }
+function setBusyButtonLabel(button, label) {
+  if (!button || button.dataset.busy !== 'true') return;
+  button.innerHTML = `<span class="button-spinner" aria-hidden="true"></span><span>${esc(label)}</span>`;
+}
+async function waitForUpdatedServer(targetVersion, timeoutMs = 180000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastVersion = '';
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`/api/health?update=${encodeURIComponent(String(Date.now()))}`, { cache: 'no-store', credentials: 'same-origin', headers: { accept: 'application/json' } });
+      if (response.ok) {
+        const health = await response.json();
+        lastVersion = String(health?.version || '');
+        if (lastVersion === String(targetVersion)) return health;
+      }
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  throw new Error(lastVersion ? `VaultBack is reachable but still reports version ${lastVersion}.` : 'VaultBack did not become reachable after the update.');
+}
+async function startUpdate() {
+  const button = $('#install-update');
+  if (!button || updateInstallInFlight) return;
+  const confirmed = await appDialog({ title: 'Install VaultBack update?', message: 'VaultBack will download and verify the release, preserve data and credentials, then restart through the configured process manager. Do not start a backup during the update.', confirmText: 'Install update', cancelText: 'Cancel', danger: true });
+  if (!confirmed) return;
+  updateInstallInFlight = true;
+  setButtonBusy(button, true, 'Installing update…');
+  renderUpdatePanel();
+  try {
+    const result = await api('/api/settings/update/install', { method: 'POST', body: JSON.stringify({}) });
+    if (!result) throw new Error('The update did not start.');
+    const targetVersion = String(result.targetVersion || state.update?.latestVersion || '');
+    if (!targetVersion) throw new Error('The update did not provide a target version.');
+    state.update = { ...(state.update || {}), status: 'installing', updateAvailable: false, latestVersion: targetVersion };
+    setBusyButtonLabel(button, 'Waiting for server restart…');
+    toast('Update started. Waiting for the new server to become healthy…');
+    await waitForUpdatedServer(targetVersion);
+    setBusyButtonLabel(button, 'Restart successful. Reloading…');
+    await new Promise(resolve => setTimeout(resolve, 350));
+    window.location.reload();
+  } catch (e) {
+    updateInstallInFlight = false;
+    state.update = { ...(state.update || {}), status: 'failed', updateAvailable: Boolean(state.update?.latestVersion), error: e.message || 'Update failed' };
+    setButtonBusy(button, false);
+    renderUpdatePanel();
+    toast(e.message || 'Update failed', true);
+  }
+}
 function closeDependencySetup(){const modal=$('#dependency-setup-modal');modal?.remove();if(!document.querySelector('.form-panel:not(.hidden), .user-form:not(.hidden), .confirm-dialog, .dependency-setup-modal'))document.body.classList.remove('modal-open')}
 function dependencyInstallMarkup(job){const percent=Number.isFinite(Number(job?.percent))?Math.max(0,Math.min(100,Number(job.percent))):0;const complete=job?.state==='completed';const failed=job?.state==='failed';return `<div class="dependency-install-status ${complete?'is-complete':''} ${failed?'is-failed':''}"><div class="dependency-install-status-head"><b>${esc(job?.message||'Preparing tool setup…')}</b><span>${complete?'Ready':failed?'Failed':`${percent}%`}</span></div><div class="dependency-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width:${percent}%"></span></div>${job?.totalBytes?`<small>${esc(fmtBytes(job.bytesDownloaded))} of ${esc(fmtBytes(job.totalBytes))}</small>`:''}${failed?`<div class="callout dependency-warning">${esc(job.error||job.message||'Tool setup failed')}</div>`:''}</div>`}
 function toolStatusLabel(status){return status==='working'?'Working fine':status==='missing'?'Missing':'Corrupt or not responding'}
