@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { AuthService } from '../auth/auth.service';
 import { BackupService } from './backup.service';
 import { ToolInstallerService } from './tool-installer.service';
+import { BackupJobDto, DatabaseConnectionDto, RestoreDto } from '../common/request-dtos';
 
 @Controller('api')
 export class BackupController {
@@ -14,12 +15,12 @@ export class BackupController {
   @Post('dependencies/repair') repairDependencies(@Req() req: FastifyRequest) { this.auth.requireAdmin(req); return this.tools.repair(); }
   @Get('dependencies/install/:id') dependencyInstallStatus(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.tools.status(id); }
   @Get('connections') connections(@Req() req: FastifyRequest) { this.auth.requireSession(req); const query = (req as any).query || {}; return this.backups.listConnectionsPage(query); }
-@Post('connections') saveConnection(@Req() req: FastifyRequest, @Body() body: any) { this.auth.requireAdmin(req); return this.backups.saveConnection(body); }
-@Post('connections/test') testConnection(@Req() req: FastifyRequest, @Body() body: any) { this.auth.requireAdmin(req); return this.backups.testConnection(body); }
+@Post('connections') saveConnection(@Req() req: FastifyRequest, @Body() body: DatabaseConnectionDto) { this.auth.requireAdmin(req); return this.backups.saveConnection(body); }
+@Post('connections/test') testConnection(@Req() req: FastifyRequest, @Body() body: DatabaseConnectionDto) { this.auth.requireAdmin(req); return this.backups.testConnection(body); }
   @Get('connections/:id/databases') databases(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.backups.listAvailableDatabases(id); }
   @Delete('connections/:id') deleteConnection(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.backups.deleteConnection(id); }
   @Get('jobs') jobs(@Req() req: FastifyRequest) { this.auth.requireSession(req); const query = (req as any).query || {}; return this.backups.listJobsPageV2(query); }
-  @Post('jobs') saveJob(@Req() req: FastifyRequest, @Body() body: any) { this.auth.requireAdmin(req); return this.backups.saveJobV2(body); }
+  @Post('jobs') saveJob(@Req() req: FastifyRequest, @Body() body: BackupJobDto) { this.auth.requireAdmin(req); return this.backups.saveJobV2(body); }
   @Get('jobs/:id/runs') jobRuns(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireSession(req); const query = (req as any).query || {}; return this.backups.runsForJobPage(id, query); }
   @Delete('jobs/:id') deleteJob(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.backups.deleteJob(id); }
   @Post('jobs/:id/run') run(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireSession(req, true); return this.backups.runNow(id); }
@@ -47,7 +48,7 @@ export class BackupController {
     if (result.cleanup) stream.once('close', () => { try { fs.rmSync(result.path, { force: true }); fs.rmSync(result.path.replace(/[\\/][^\\/]+$/, ''), { recursive: true, force: true }); } catch {} });
     return reply.send(stream);
   }
-  @Post('runs/:id/restore') restore(@Req() req: FastifyRequest, @Param('id') id: string, @Body() body: any) { this.auth.requireAdmin(req); return this.backups.restoreRun(id, body); }
+  @Post('runs/:id/restore') restore(@Req() req: FastifyRequest, @Param('id') id: string, @Body() body: RestoreDto) { this.auth.requireAdmin(req); return this.backups.restoreRun(id, body); }
   @Post('runs/:id/retry') retry(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireSession(req, true); return this.backups.retryRun(id); }
   @Get('runs/:id/verification') verification(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireSession(req); return this.backups.verificationReport(id); }
 }

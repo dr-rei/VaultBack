@@ -1,6 +1,6 @@
 {
   "name": "vaultback-db-backup",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "private": true,
   "description": "Secure, self-hosted database backup manager with a GUI",
   "license": "UNLICENSED",
@@ -12,6 +12,9 @@
     "start": "node dist/main.js",
     "start:dev": "tsx watch src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "jest --runInBand",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage --runInBand",
     "deploy:pm2": "npm ci && npm run build && pm2 restart vaultback --update-env",
     "package:release": "npm run build && node scripts/package-release.mjs",
     "release:manifest": "node scripts/create-release-manifest.mjs",
@@ -28,6 +31,8 @@
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-fastify": "^11.0.0",
     "@nestjs/schedule": "^5.0.1",
+    "@nestjs/swagger": "^11.4.6",
+    "@nestjs/terminus": "^11.1.1",
     "basic-ftp": "^5.0.5",
     "bcryptjs": "^3.0.2",
     "class-transformer": "^0.5.1",
@@ -39,8 +44,12 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@nestjs/testing": "^11.1.28",
+    "@types/jest": "^30.0.0",
     "@types/node": "^22.13.4",
     "@types/sql.js": "^1.4.9",
+    "jest": "^30.4.2",
+    "ts-jest": "^29.4.12",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3"
   },

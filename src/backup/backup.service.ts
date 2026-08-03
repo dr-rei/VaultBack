@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 import { StorageDownloadProgress, StorageService } from '../storage/storage.service';
 import { DatabaseService } from '../database/database.service';
 import { BackupJob, BackupObjectOptions, DatabaseConnection, StorageTarget } from '../types';
@@ -47,13 +47,28 @@ type ZipEntry = { name: string; method: number; compressedSize: number; uncompre
 const ZIP_CRC_TABLE = Array.from({ length: 256 }, (_, index) => { let value = index; for (let bit = 0; bit < 8; bit++) value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : value >>> 1; return value >>> 0; });
 
 @Injectable()
-export class BackupService {
+export class BackupService implements OnApplicationShutdown {
   private readonly logger = new Logger(BackupService.name);
   private readonly running = new Set<string>();
   private readonly queued = new Set<string>();
   private readonly liveProcessState = new Map<string, LiveBackupProcess>();
   private readonly downloadPreparations = new Map<string, DownloadPreparation>();
+  private shuttingDown = false;
   constructor(private readonly store: DatabaseService, private readonly storage: StorageService, private readonly system: SystemService, private readonly realtime: RealtimeService) {}
+
+  onApplicationShutdown(signal?: string) {
+    this.shuttingDown = true;
+    const message = `Application shutting down${signal ? ` (${signal})` : ''}`;
+    for (const [runId, process] of this.liveProcessState) {
+      if (process.status !== 'running') continue;
+      this.setProcessStage(runId, 'failed', 'failed', message);
+      this.store.db.prepare('UPDATE backup_runs SET status=?,finished_at=?,error_message=?,verification_status=? WHERE id=? AND status=?').run('failed', this.store.now(), message, 'failed', runId, 'running');
+    }
+    this.running.clear();
+    this.queued.clear();
+    for (const preparation of this.downloadPreparations.values()) clearTimeout(preparation.cleanupTimer);
+    this.downloadPreparations.clear();
+  }
 
   private pageOptions(input: any = {}) { const page = Math.max(1, Number.parseInt(String(input.page || '1'), 10) || 1); const pageSize = Math.min(100, Math.max(10, Number.parseInt(String(input.pageSize || '25'), 10) || 25)); return { page, pageSize, offset: (page - 1) * pageSize, search: String(input.search || '').trim().toLowerCase() }; }
   private pageResult(items: any[], total: number, page: number, pageSize: number, extra: Record<string, unknown> = {}) { return { items, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)), ...extra }; }
@@ -214,8 +229,8 @@ export class BackupService {
   deleteJob(id: string) { this.store.db.prepare('DELETE FROM backup_job_connections WHERE job_id=?').run(id); this.store.db.prepare('DELETE FROM backup_job_storages WHERE job_id=?').run(id); this.store.db.prepare('DELETE FROM backup_jobs WHERE id = ?').run(id); return { ok: true }; }
    runs(filters: { status?: string; search?: string } = {}) { const where = filters.status && ['success','failed','running'].includes(filters.status) ? 'WHERE r.status=?' : ''; const params = where ? [filters.status] : []; const rows = this.store.db.prepare(`SELECT r.id,r.job_id as jobId,j.name as jobName,r.status,r.started_at as startedAt,r.finished_at as finishedAt,r.filename,r.size_bytes as sizeBytes,r.sha256,r.verification_status as verificationStatus,r.verification_message as verificationMessage,r.error_message as errorMessage FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id ${where} ORDER BY r.started_at DESC LIMIT 100`).all(...params); return filters.search ? rows.filter((row: any) => `${row.jobName} ${row.filename || ''}`.toLowerCase().includes(filters.search!.toLowerCase())) : rows; }
    runsForJob(jobId: string) { return this.store.db.prepare('SELECT r.id,r.job_id as jobId,j.name as jobName,s.name as storageTargetName,r.status,r.started_at as startedAt,r.finished_at as finishedAt,r.filename,r.size_bytes as sizeBytes,r.sha256,r.verification_status as verificationStatus,r.verification_message as verificationMessage,r.error_message as errorMessage FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id JOIN storage_targets s ON s.id=j.storage_target_id WHERE r.job_id=? ORDER BY r.started_at DESC LIMIT 100').all(jobId); }
-   async runDue() { const jobs = this.store.db.prepare('SELECT * FROM backup_jobs WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at').all(this.store.now()) as any[]; for (const job of jobs) { if (this.running.has(job.id)) { if (job.overlap_policy === 'queue') { this.queued.add(job.id); this.logger.warn(`Backup ${job.id} is already running; overlap queued by schedule policy`); } else void this.system.notifyOnce('backup_failed', `overlap:${job.id}`, `VaultBack skipped overlapping backup: ${job.name || job.id}`); continue; } this.store.db.prepare('UPDATE backup_jobs SET next_run_at=? WHERE id=?').run(nextCron(job.cron_expression, new Date(), job.timezone || 'UTC').toISOString(), job.id); void this.run(job.id).catch((error: any) => this.logger.error(`Scheduled backup ${job.id} failed: ${error.message}`)); } }
-   async runNow(id: string) { if (this.running.has(id)) throw new BadRequestException('This backup is already running'); return this.run(id); }
+  async runDue() { if (this.shuttingDown) return; const jobs = this.store.db.prepare('SELECT * FROM backup_jobs WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at').all(this.store.now()) as any[]; for (const job of jobs) { if (this.running.has(job.id)) { if (job.overlap_policy === 'queue') { this.queued.add(job.id); this.logger.warn(`Backup ${job.id} is already running; overlap queued by schedule policy`); } else void this.system.notifyOnce('backup_failed', `overlap:${job.id}`, `VaultBack skipped overlapping backup: ${job.name || job.id}`); continue; } this.store.db.prepare('UPDATE backup_jobs SET next_run_at=? WHERE id=?').run(nextCron(job.cron_expression, new Date(), job.timezone || 'UTC').toISOString(), job.id); void this.run(job.id).catch((error: any) => this.logger.error(`Scheduled backup ${job.id} failed: ${error.message}`)); } }
+  async runNow(id: string) { if (this.shuttingDown) throw new BadRequestException('VaultBack is shutting down'); if (this.running.has(id)) throw new BadRequestException('This backup is already running'); return this.run(id); }
    async monitorHealth() {
      const staleHours = Math.max(1, Number.parseInt(String(process.env.BACKUP_STALE_AFTER_HOURS || '26'), 10) || 26);
      const staleBefore = Date.now() - staleHours * 60 * 60 * 1000;
@@ -364,6 +379,7 @@ export class BackupService {
   }
 
   private async run(jobId: string, attempt = 0, connectionIdOverride?: string, storageTargetIdOverride?: string, databasesOverride?: string[]): Promise<any> {
+    if (this.shuttingDown) throw new Error('VaultBack is shutting down');
     if (!connectionIdOverride && !storageTargetIdOverride && !databasesOverride) {
       const configured = this.store.db.prepare('SELECT COUNT(*) as count FROM backup_job_connections WHERE job_id=?').get(jobId) as any;
       const configuredStorages = this.store.db.prepare('SELECT COUNT(*) as count FROM backup_job_storages WHERE job_id=?').get(jobId) as any;

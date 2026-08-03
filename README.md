@@ -223,6 +223,7 @@ Important settings:
 | `NODE_ENV` | `development` behavior when unset | Set to `production` to enable production protections. Development exposes detailed 500-level error messages for debugging. |
 | `RATE_LIMIT_PER_MINUTE` | `800` | Production only. Maximum normal API requests per client IP per minute. Login and setup use a separate limit of 10 attempts per 15 minutes. |
 | `MAX_LOGIN_SESSIONS_PER_USER` | `0` | Maximum active login sessions per user. `0` means unlimited. When positive, the oldest sessions are removed before a new login is created. |
+| `SWAGGER_ENABLED` | `false` | Set to `true` only when an administrator needs the protected OpenAPI UI at `/api/docs`. It is disabled by default. |
 | `UPDATE_MANIFEST_URL` | GitHub release feed | Optional HTTPS URL for a custom `latest.json` release manifest. Leave unset to use the public VaultBack release feed. |
 | `UPDATE_CHANNEL` | `stable` | Release channel label shown in the administrator update panel. |
 | `UPDATE_PM2_APP` | unset | PM2 process name used by the in-app updater. Set this to `vaultback` for aaPanel/PM2 deployments. |
@@ -234,6 +235,16 @@ Rate limiting is disabled when `NODE_ENV` is anything other than `production`. I
 The first administrator can change `NODE_ENV` from **Settings → Environment**. The selected value is written to `.env` and can be saved for the next restart or applied immediately through the configured supervisor. The `.env` value is authoritative for VaultBack, so a stale `NODE_ENV` saved in a PM2 environment does not override the GUI selection. Production mode requires `APP_DOMAIN` and enables rate limiting plus sanitized 500-level responses; development mode is intended for trusted troubleshooting only.
 
 Live operational data uses the authenticated server-sent event stream at `/api/events`, not a repeating browser API poll. The stream is excluded from the normal API bucket after session authentication, is limited to five connections per user and twenty per source IP, sends heartbeats, and automatically closes when the session is revoked. Operators and viewers receive only process, backup-run, and storage-health topics; administrator-only sessions, per-IP rate-limit usage, and update topics are filtered at the server. If aaPanel/Nginx is used, disable proxy buffering for the VaultBack location so events are delivered immediately.
+
+### Operations and API diagnostics
+
+- `GET /api/health` is an unauthenticated liveness check for supervisors and reverse proxies.
+- `GET /api/health/ready` is an unauthenticated readiness check. It verifies SQLite access, encryption-key health, and critical disk capacity and returns a standard health status response.
+- `GET /api/health/details` remains an authenticated diagnostic endpoint for the GUI and includes dependency/tool details.
+- Every request receives an `X-Request-Id` response header. Include that value when correlating a user-visible error with server logs.
+- Set `SWAGGER_ENABLED=true` temporarily to expose administrator-only API documentation at `/api/docs`. The docs and JSON document endpoint return `404` to unauthenticated or non-administrator callers; disable the setting again after troubleshooting.
+
+The global validation pipe transforms supported values, rejects unknown fields, and validates DTO-backed write requests. In production, validation and 500-level responses intentionally avoid returning internal implementation details.
 
 ### Versioned releases and in-app updates
 

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 import { ServerResponse } from 'node:http';
 
 export type RealtimeTopic = 'processes' | 'backup_runs' | 'sessions' | 'rate_limit' | 'updates' | 'storage_health' | 'downloads';
@@ -19,7 +19,7 @@ export type RealtimeSnapshotContext = { userId: string; role: Role; ip: string; 
 type SnapshotProvider = (context: RealtimeSnapshotContext) => unknown;
 
 @Injectable()
-export class RealtimeService {
+export class RealtimeService implements OnApplicationShutdown {
   private readonly logger = new Logger(RealtimeService.name);
   private readonly connections = new Map<string, Connection>();
   private readonly pending = new Map<RealtimeTopic, { payload: unknown; timer: ReturnType<typeof setTimeout> }>();
@@ -118,6 +118,13 @@ export class RealtimeService {
   }
 
   connectionCount() { return this.connections.size; }
+
+  onApplicationShutdown() {
+    clearInterval(this.snapshotTimer);
+    for (const pending of this.pending.values()) clearTimeout(pending.timer);
+    this.pending.clear();
+    this.disconnectAll();
+  }
 
   registerSnapshotProvider(topic: RealtimeTopic, provider: SnapshotProvider) { this.snapshots.set(topic, provider); }
 

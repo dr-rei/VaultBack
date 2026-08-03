@@ -326,7 +326,7 @@ function showStorageForm(item={}){
   el.innerHTML=formShell(item.id?'Edit storage target':'Add storage target',field('Display name','name',item.name)+common+`<div id="storage-guide-wrap" class="field full">${storageGuide(type)}</div>`+`<div id="storage-specific" class="form-grid full"></div>`);
   const draw=()=>{const selected=el.querySelector('[name=type]').value;$('#storage-guide-wrap').innerHTML=storageGuide(selected);$('#storage-specific').innerHTML=storageFields(selected,c)};
   el.querySelector('[name=type]').onchange=draw;draw();
-  $('#save-form').onclick=async()=>{const save=$('#save-form');try{await withButtonBusy(save,async()=>{const form=el.querySelector('.form-shell');const f=new FormData(form);const data=Object.fromEntries(f);data.config={};el.querySelectorAll('#storage-specific [name]').forEach(input=>{data.config[input.name]=input.type==='checkbox'?input.checked:input.value});delete data.type;data.type=el.querySelector('[name=type]').value;await api('/api/storage',{method:'POST',body:JSON.stringify({id:item.id,...data})});toast('Storage target saved');closeForms();await loadAll()},'Saving storage…')}catch(e){toast(e.message,true)}}
+  $('#save-form').onclick=async()=>{const save=$('#save-form');try{await withButtonBusy(save,async()=>{const form=el.querySelector('.form-shell');const f=new FormData(form);const data=Object.fromEntries(f);data.config={};el.querySelectorAll('#storage-specific [name]').forEach(input=>{data.config[input.name]=input.type==='checkbox'?input.checked:input.value});const payload={id:item.id,name:data.name,type:el.querySelector('[name=type]').value,config:data.config};await api('/api/storage',{method:'POST',body:JSON.stringify(payload)});toast('Storage target saved');closeForms();await loadAll()},'Saving storage…')}catch(e){toast(e.message,true)}}
 }
 
 function vaultbackCronName(value, names) {
@@ -479,6 +479,7 @@ function showJobForm(item = {}) {
       data.databases = data.databaseSelections.flatMap(item => item.databases);
       data.databaseScope = form.querySelector('[name="databaseScope"]')?.value || 'selected';
       data.backupObjects = { views: Boolean(form.querySelector('[name="backupObjectViews"]')?.checked), routines: Boolean(form.querySelector('[name="backupObjectRoutines"]')?.checked), triggers: Boolean(form.querySelector('[name="backupObjectTriggers"]')?.checked), events: Boolean(form.querySelector('[name="backupObjectEvents"]')?.checked) };
+      delete data.backupObjectViews; delete data.backupObjectRoutines; delete data.backupObjectTriggers; delete data.backupObjectEvents;
       data.retentionCount = Number(data.retentionCount);
       data.enabled = data.enabled === 'true';
       await api('/api/jobs', { method: 'POST', body: JSON.stringify({ id: item.id, ...data }) });

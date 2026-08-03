@@ -1,6 +1,8 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -52,6 +54,7 @@ async function bootstrap() {
   const tls = tlsOptions(protocol);
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter({ logger: true, ...(tls ? { https: tls } : {}) }));
   const isProduction = isProductionEnvironment();
+  app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true, disableErrorMessages: isProduction }));
   app.useGlobalFilters(new EnvironmentExceptionFilter(isProduction));
   await app.register(cookie);
   await app.register(helmet, { contentSecurityPolicy: false });
@@ -65,6 +68,18 @@ async function bootstrap() {
     const requestPath = String(request.url || '').split('?')[0];
     if (requestPath.startsWith('/api/') && requestPath !== '/api/events' && !/^\/api\/auth\/(login|setup)$/.test(requestPath)) system.recordApiRequest(request);
   });
+  const swaggerEnabled = String(process.env.SWAGGER_ENABLED || '').trim().toLowerCase() === 'true';
+  if (swaggerEnabled) {
+    server.addHook('onRequest', async (request, reply) => {
+      const requestPath = String(request.url || '').split('?')[0];
+      if (!requestPath.startsWith('/api/docs')) return;
+      const session = auth.getSession(request);
+      if (!session || session.role !== 'admin') return reply.code(404).send({ message: 'Not found' });
+    });
+    const swaggerConfig = new DocumentBuilder().setTitle('VaultBack API').setDescription('Administrator API documentation for VaultBack').setVersion(system.getAppVersion()).addCookieAuth('vb_session').build();
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('api/docs', app, document, { jsonDocumentUrl: 'api/docs-json', swaggerOptions: { persistAuthorization: false } });
+  }
   if (isProduction) {
     // Rate-limit API traffic without making normal frontend assets compete for
     // the same bucket. Authentication gets its own stricter bucket because it
@@ -117,8 +132,11 @@ async function bootstrap() {
       response.writeHead(308, { location: `https://${domain}${portSuffix}${request.url || '/'}` });
       response.end();
     });
+    app.getHttpAdapter().getInstance().addHook('onClose', async () => {
+      if (!redirectServer.listening) return;
+      await new Promise<void>(resolve => redirectServer.close(() => resolve()));
+    });
     redirectServer.listen({ host, port: httpPort });
-    app.enableShutdownHooks();
   }
 }
 bootstrap();

@@ -164,9 +164,12 @@ BACKUP_STALE_AFTER_HOURS=26
 MAX_LOGIN_SESSIONS_PER_USER=0
 UPDATE_CHANNEL=stable
 UPDATE_PM2_APP=vaultback
+SWAGGER_ENABLED=false
 ~~~
 
 `RATE_LIMIT_PER_MINUTE` limits normal API requests per client IP in production. `MAX_LOGIN_SESSIONS_PER_USER=0` allows unlimited concurrent sessions for each account; set a positive value to remove the oldest sessions before a new login is created. Restart PM2 after changing `.env`.
+
+VaultBack exposes `GET /api/health` for aaPanel or a reverse proxy liveness check and `GET /api/health/ready` for readiness checks. Both are safe to use for process monitoring. Every response includes an `X-Request-Id` header for log correlation. Keep `SWAGGER_ENABLED=false` in production; if administrator-only API documentation is needed temporarily, set it to `true`, restart PM2, open `/api/docs` while signed in as an administrator, then set it back to `false` and restart again.
 
 After the first administrator signs in, the runtime mode can also be changed from **Settings → Environment**. The control updates `NODE_ENV` in `.env`; choose **Save for next restart** or **Save and restart**. Only the first administrator can change this because production mode controls rate limiting and error-message disclosure. Keep `APP_DOMAIN` configured before selecting production. The `.env` value takes precedence over a stale `NODE_ENV` value retained by PM2.
 

@@ -19,7 +19,8 @@ export class EnvironmentExceptionFilter implements ExceptionFilter {
     const actualMessage = exception instanceof Error ? exception.message : String(exception || 'Unknown error');
 
     if (serverError) {
-      this.logger.error(`${request.method} ${request.url}: ${actualMessage}`, exception instanceof Error ? exception.stack : undefined);
+      const requestId = String((request as any).id || request.headers['x-request-id'] || 'unknown');
+      this.logger.error(`[${requestId}] ${request.method} ${request.url}: ${actualMessage}`, exception instanceof Error ? exception.stack : undefined);
     }
 
     if (serverError && this.production) {

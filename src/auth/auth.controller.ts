@@ -3,6 +3,7 @@ import { FastifyReply, FastifyRequest } from 'fastify';
 import { AuthService } from './auth.service';
 import { RealtimeService } from '../system/realtime.service';
 import { isProductionEnvironment } from '../common/app-config';
+import { CredentialsDto, UserDto } from '../common/request-dtos';
 
 @Controller('api/auth')
 export class AuthController {
@@ -10,13 +11,13 @@ export class AuthController {
 
   @Get('status') status() { return { setupComplete: this.auth.isSetupComplete() }; }
 
-  @Post('setup') async setup(@Body() body: { username?: string; password?: string }, @Res({ passthrough: true }) reply: FastifyReply) {
+  @Post('setup') async setup(@Body() body: CredentialsDto, @Res({ passthrough: true }) reply: FastifyReply) {
     const session = await this.auth.setup(body.username || '', body.password || '');
     this.setCookie(reply, session.id);
     return { ok: true, csrfToken: session.csrfToken };
   }
 
-  @Post('login') async login(@Body() body: { username?: string; password?: string }, @Res({ passthrough: true }) reply: FastifyReply) {
+  @Post('login') async login(@Body() body: CredentialsDto, @Res({ passthrough: true }) reply: FastifyReply) {
     const session = await this.auth.login(body.username || '', body.password || '');
     this.setCookie(reply, session.id);
     return { ok: true, csrfToken: session.csrfToken };
@@ -31,8 +32,8 @@ export class AuthController {
   }
 
   @Get('users') users(@Req() request: FastifyRequest) { this.auth.requireAdmin(request); return this.auth.listUsersPage((request as any).query || {}); }
-  @Post('users') async createUser(@Req() request: FastifyRequest, @Body() body: { username?: string; password?: string; role?: string }) { this.auth.requireAdmin(request); return this.auth.createUser(body.username || '', body.password || '', body.role || 'operator'); }
-  @Patch('users/:id') async updateUser(@Req() request: FastifyRequest, @Param('id') id: string, @Body() body: { username?: string; password?: string; role?: string }) { this.auth.requireAdmin(request); return this.auth.updateUser(id, body.username || '', body.password || '', body.role || 'operator'); }
+  @Post('users') async createUser(@Req() request: FastifyRequest, @Body() body: UserDto) { this.auth.requireAdmin(request); return this.auth.createUser(body.username || '', body.password || '', body.role || 'operator'); }
+  @Patch('users/:id') async updateUser(@Req() request: FastifyRequest, @Param('id') id: string, @Body() body: UserDto) { this.auth.requireAdmin(request); return this.auth.updateUser(id, body.username || '', body.password || '', body.role || 'operator'); }
   @Delete('users/:id') deleteUser(@Req() request: FastifyRequest, @Param('id') id: string) { const session = this.auth.requireAdmin(request); return this.auth.deleteUser(id, session.user_id); }
   @Get('sessions') sessions(@Req() request: FastifyRequest) { this.auth.requireAdmin(request); return this.auth.listActiveSessions(request); }
   @Post('sessions/logout-lower') logoutLowerSessions(@Req() request: FastifyRequest) { const session = this.auth.requireAdmin(request); const result = this.auth.forceLogoutLowerRoles(session.user_id); this.realtime.publish('sessions', { reason: 'sessions_changed' }); return result; }
