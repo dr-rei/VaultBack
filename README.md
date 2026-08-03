@@ -172,7 +172,7 @@ Keep the Environment Variables field empty when using `.env` in the project dire
 | User | `www` |
 | Node | Node.js 22 or newer |
 
-PM2 Project mode is preferred because aaPanel provides clearer restart, logs, memory, and boot-persistence controls. When aaPanel exposes a **Config File** field, select `ecosystem.config.cjs`; it writes PM2 stdout and stderr to `data/logs/vaultback-out.log` and `data/logs/vaultback-error.log`. The `data/` directory is runtime data and is ignored by Git. The updater reports its own progress in `data/update-status.json`. With a reverse proxy, keep VaultBack bound to `127.0.0.1` and proxy the domain to the configured application port.
+PM2 Project mode is preferred because aaPanel provides clearer restart, logs, memory, and boot-persistence controls. When aaPanel exposes a **Config File** field, select `ecosystem.config.cjs`; it writes PM2 stdout and stderr to `data/logs/vaultback-out.log` and `data/logs/vaultback-error.log`. The `data/` directory is runtime data and is ignored by Git. The updater reports progress in `data/update-status.json` and detailed updater commands in `data/logs/update.log`. With a reverse proxy, keep VaultBack bound to `127.0.0.1` and proxy the domain to the configured application port.
 
 ### Portable client deployment
 

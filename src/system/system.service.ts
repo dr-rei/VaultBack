@@ -325,8 +325,20 @@ export class SystemService {
     if (!saved.artifact || !targetVersion || this.compareVersions(targetVersion, currentVersion) <= 0) throw new BadRequestException('Check for a newer release before starting an update.');
     const script = path.join(process.cwd(), 'scripts', 'update.mjs'); const configuredProtocol = String(process.env.APP_PROTOCOL || 'http').toLowerCase(); const protocol = configuredProtocol === 'https' || configuredProtocol === 'both' ? 'https' : 'http'; const port = configuredProtocol === 'both' ? Number(process.env.HTTPS_PORT || 3443) : Number(process.env.PORT || 3010); const healthUrl = `${protocol}://127.0.0.1:${port}/api/health`; const healthHost = String(process.env.APP_DOMAIN || '127.0.0.1').split(',')[0].trim() || '127.0.0.1';
     this.writeUpdateStatus({ state: 'queued', progress: 0, targetVersion, error: '' }); this.realtime.publish('updates', this.updateInfo()); this.audit(userId, 'system.update.start', undefined, targetVersion);
-    const child = spawn(process.execPath, [script, '--app-root', process.cwd(), '--data-dir', this.store.dataDir, '--version', targetVersion, '--url', String(saved.artifact.url), '--sha256', String(saved.artifact.sha256), '--health-url', healthUrl, '--health-host', healthHost, ...(process.env.UPDATE_PM2_APP ? ['--pm2-app', String(process.env.UPDATE_PM2_APP)] : [])], { cwd: process.cwd(), detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
-    child.once('error', error => this.writeUpdateStatus({ state: 'failed', error: String(error.message || error).slice(0, 300) })); child.unref();
+    const scriptArgs = [script, '--app-root', process.cwd(), '--data-dir', this.store.dataDir, '--version', targetVersion, '--url', String(saved.artifact.url), '--sha256', String(saved.artifact.sha256), '--health-url', healthUrl, '--health-host', healthHost, ...(process.env.UPDATE_PM2_APP ? ['--pm2-app', String(process.env.UPDATE_PM2_APP)] : [])];
+    const sessionLauncher = process.platform === 'win32' ? '' : ['/usr/bin/setsid', '/bin/setsid'].find(candidate => fs.existsSync(candidate)) || '';
+    const command = sessionLauncher || process.execPath;
+    const commandArgs = sessionLauncher ? [process.execPath, ...scriptArgs] : scriptArgs;
+    const updateLog = path.join(this.store.dataDir, 'logs', 'update.log');
+    fs.mkdirSync(path.dirname(updateLog), { recursive: true });
+    const logFd = fs.openSync(updateLog, 'a');
+    try {
+      const child = spawn(command, commandArgs, { cwd: process.cwd(), detached: true, stdio: ['ignore', logFd, logFd], windowsHide: true, env: process.env });
+      child.once('error', error => this.writeUpdateStatus({ state: 'failed', error: String(error.message || error).slice(0, 300) }));
+      child.unref();
+    } finally {
+      fs.closeSync(logFd);
+    }
     const timer = setTimeout(() => { try { process.kill(process.pid, 'SIGTERM'); } catch (error: any) { this.logger.error(`Update shutdown failed: ${String(error?.message || error)}`); } }, 900); timer.unref?.();
     return { ok: true, state: 'queued', targetVersion, message: 'Update started. The application will restart through its configured process manager.' };
   }

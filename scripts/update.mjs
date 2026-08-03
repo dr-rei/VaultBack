@@ -39,6 +39,20 @@ const healthHost = argument('health-host', String(envFile.APP_DOMAIN || '127.0.0
 const pm2App = argument('pm2-app', String(envFile.UPDATE_PM2_APP || 'vaultback').trim() || 'vaultback');
 const statusFile = path.join(dataDir, 'update-status.json');
 const workRoot = path.join(dataDir, 'tmp', 'release-update');
+const logFile = path.join(dataDir, 'logs', 'update.log');
+let logFd;
+
+function ensureLogFd() {
+  if (logFd !== undefined) return logFd;
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  logFd = fs.openSync(logFile, 'a');
+  return logFd;
+}
+
+function log(message) {
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${String(message).replace(/\r?\n/g, '\n')}\n`);
+}
 
 function writeStatus(state, extra = {}) {
   fs.mkdirSync(path.dirname(statusFile), { recursive: true });
@@ -48,6 +62,7 @@ function writeStatus(state, extra = {}) {
   const temporary = `${statusFile}.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(temporary, statusFile);
+  log(`state=${state}${extra.progress === undefined ? '' : ` progress=${extra.progress}`}${extra.error ? ` error=${extra.error}` : ''}`);
 }
 
 function fail(message) {
@@ -57,9 +72,19 @@ function fail(message) {
 
 function run(command, parameters, options = {}) {
   const executable = process.platform === 'win32' && command === 'pm2' ? 'pm2.cmd' : command;
-  const result = spawnSync(executable, parameters, { encoding: 'utf8', windowsHide: true, ...options });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(String(result.stderr || result.stdout || `${command} failed`).trim().slice(0, 500));
+  const childOptions = { encoding: 'utf8', windowsHide: true, ...options };
+  if (!Object.prototype.hasOwnProperty.call(options, 'stdio')) childOptions.stdio = ['ignore', ensureLogFd(), ensureLogFd()];
+  log(`command start: ${command}`);
+  const result = spawnSync(executable, parameters, childOptions);
+  if (result.stdout) log(String(result.stdout).trimEnd());
+  if (result.stderr) log(String(result.stderr).trimEnd());
+  if (result.error) { log(`command error: ${result.error.message}`); throw result.error; }
+  if (result.status !== 0) {
+    const message = String(result.stderr || result.stdout || `${command} failed`).trim().slice(0, 500);
+    log(`command failed (${result.status}): ${message}`);
+    throw new Error(message);
+  }
+  log(`command completed: ${command}`);
   return result;
 }
 
@@ -143,6 +168,7 @@ function copyManaged(fromRoot, toRoot, replace = false) {
 }
 
 async function main() {
+  log(`update started: ${targetVersion || 'unknown'} from ${process.cwd()}`);
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(targetVersion)) throw new Error('Invalid target release version.');
   if (!/^[a-f0-9]{64}$/i.test(expectedHash)) throw new Error('The release SHA-256 value is invalid.');
   if (!updateUrl) throw new Error('The release URL is missing.');
@@ -193,11 +219,17 @@ async function main() {
     throw new Error(`Update failed and the previous release was restored: ${String(error?.message || error).slice(0, 380)}`);
   }
   writeStatus('installed', { progress: 100, installedVersion: targetVersion, error: '', rollbackPath: rollback });
+  log(`update completed: ${targetVersion}`);
 }
 
 try {
   await main();
 } catch (error) {
-  try { writeStatus('failed', { error: String(error?.message || error).slice(0, 500) }); } catch {}
+  const message = String(error?.stack || error?.message || error).slice(0, 2000);
+  try { log(`update failed: ${message}`); writeStatus('failed', { error: message.slice(0, 500) }); } catch {}
   process.exitCode = 1;
+} finally {
+  if (logFd !== undefined) {
+    try { fs.closeSync(logFd); } catch {}
+  }
 }

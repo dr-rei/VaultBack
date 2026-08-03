@@ -232,7 +232,8 @@ directory is runtime data and is ignored by Git. If the aaPanel project was
 created before this configuration was installed, restart it once from the
 aaPanel GUI or run `pm2 restart vaultback --update-env` as the same `www` user;
 PM2 will then create the log files. Update progress and updater errors are
-recorded separately in `data/update-status.json`.
+recorded in `data/update-status.json`; detailed updater commands and npm/tar
+output are appended to `data/logs/update.log`.
 
 The application should remain bound to `127.0.0.1` when a domain reverse proxy is used.
 

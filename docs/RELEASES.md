@@ -123,6 +123,6 @@ The manifest must contain a semantic `version`, optional release notes, and an a
 4. Select **Check for updates**. Review the complete list of releases newer than the installed version; each entry links to its changelog.
 5. Select **Install update** for the latest verified package.
 6. Do not start a backup while the update is installing. The browser may disconnect briefly while PM2 restarts the process.
-7. If the site does not return, inspect `pm2 status`, `pm2 logs vaultback`, and `data/update-status.json`.
+7. If the site does not return, inspect `pm2 status`, `pm2 logs vaultback`, `data/update-status.json`, and `data/logs/update.log` for the exact updater stage and command output.
 
 Before every upgrade, retain a copy of `data/`, `.env`, and the current `APP_ENCRYPTION_KEY`. The release updater is designed to preserve them, but these are still the recovery boundary for encrypted credentials and application state.
