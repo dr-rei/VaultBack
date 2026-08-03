@@ -203,7 +203,7 @@ async function main() {
     }
     writeStatus('installing', { progress: 82 });
     copyManaged(releaseRoot, appRoot, true);
-    run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: appRoot, stdio: 'ignore' });
+    run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: appRoot });
     if (pm2App) {
       writeStatus('restarting', { progress: 95 });
       run('pm2', ['restart', pm2App, '--update-env']);
@@ -212,7 +212,7 @@ async function main() {
   } catch (error) {
     writeStatus('rolling_back', { progress: 96, error: String(error?.message || error).slice(0, 500) });
     copyManaged(rollback, appRoot, true);
-    try { run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: appRoot, stdio: 'ignore' }); } catch {}
+    try { run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: appRoot }); } catch {}
     if (pm2App && stopped) {
       try { run('pm2', ['restart', pm2App, '--update-env']); } catch {}
     }
