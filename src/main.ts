@@ -73,12 +73,22 @@ async function bootstrap() {
     server.addHook('onRequest', async (request, reply) => {
       const requestPath = String(request.url || '').split('?')[0];
       if (!requestPath.startsWith('/api/docs')) return;
+      reply.header('Cache-Control', 'private, max-age=3600, must-revalidate');
+      reply.header('CDN-Cache-Control', 'no-store');
+      reply.header('Cloudflare-CDN-Cache-Control', 'no-store');
+      reply.header('Surrogate-Control', 'no-store');
+      reply.header('Vary', 'Cookie');
       const session = auth.getSession(request);
       if (!session || session.role !== 'admin') return reply.code(404).send({ message: 'Not found' });
     });
     const swaggerConfig = new DocumentBuilder().setTitle('VaultBack API').setDescription('Administrator API documentation for VaultBack').setVersion(system.getAppVersion()).addCookieAuth('vb_session').build();
     const document = SwaggerModule.createDocument(app, swaggerConfig);
-    SwaggerModule.setup('api/docs', app, document, { jsonDocumentUrl: 'api/docs-json', swaggerOptions: { persistAuthorization: false } });
+    SwaggerModule.setup('api/docs', app, document, {
+      jsonDocumentUrl: 'api/docs-json',
+      customfavIcon: '/assets/vaultback-logo.png',
+      customSiteTitle: 'VaultBack API',
+      swaggerOptions: { persistAuthorization: false }
+    });
   }
   if (isProduction) {
     // Rate-limit API traffic without making normal frontend assets compete for
