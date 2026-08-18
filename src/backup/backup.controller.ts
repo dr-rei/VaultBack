@@ -7,13 +7,14 @@ import { ToolInstallerService } from './tool-installer.service';
 import { BackupJobDto, DatabaseConnectionDto, RestoreDto } from '../common/request-dtos';
 import { ApiCookieAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { ApiAcceptedExample, ApiCommonErrorResponses, ApiExampleResponse, ApiFileResponse } from '../common/swagger-responses';
+import { SystemService } from '../system/system.service';
 
 @Controller('api')
 @ApiTags('Backups, schedules, and database connections')
 @ApiCookieAuth('vb_session')
 @ApiCommonErrorResponses()
 export class BackupController {
-  constructor(private readonly backups: BackupService, private readonly auth: AuthService, private readonly tools: ToolInstallerService) {}
+  constructor(private readonly backups: BackupService, private readonly auth: AuthService, private readonly tools: ToolInstallerService, private readonly system: SystemService) {}
   @Get('dependencies/status')
   @ApiOperation({ summary: 'Check bundled database tool health and availability.' })
   @ApiExampleResponse(200, 'Bundled database tool diagnostics.', { ok: true, engines: [{ engine: 'mysql', client: { available: true, command: 'mysql' }, dump: { available: true, command: 'mysqldump' } }], checkedAt: '2026-08-03T07:30:00.000Z', installer: { supported: true, packages: [] } })
@@ -88,6 +89,10 @@ export class BackupController {
   @ApiOperation({ summary: 'List backup history with search and pagination.' })
   @ApiExampleResponse(200, 'Paginated backup history.', { items: [{ id: 'run_01HXYZ123', jobId: 'job_01HXYZ123', jobName: 'Nightly production backup', status: 'success', startedAt: '2026-08-03T02:00:00.000Z', finishedAt: '2026-08-03T02:00:38.000Z', filename: 'production-backup-2026-08-03.sql.gz', sizeBytes: 345200000, verificationStatus: 'passed', databases: ['application_db'] }], total: 1, page: 1, pageSize: 25, pageCount: 1, successTotal: 1, failedTotal: 0 })
   runs(@Req() req: FastifyRequest) { this.auth.requireSession(req); const query = (req as any).query || {}; return this.backups.runsPage(query); }
+  @Post('runs/reconcile')
+  @ApiOperation({ summary: 'Reconcile historical backup records with their storage files. Administrator only.' })
+  @ApiExampleResponse(201, 'Historical backup reconciliation completed.', { ok: true, checked: 42, expired: 17, available: 24, errors: 1, errorItems: [], completedAt: '2026-08-18T03:00:00.000Z' })
+  async reconcileRuns(@Req() req: FastifyRequest) { const session = this.auth.requireAdmin(req); const result = await this.backups.reconcileMissingArtifacts(); this.system.audit(session.user_id, 'backup.artifacts.reconcile', undefined, undefined, { checked: result.checked, expired: result.expired, errors: result.errors }); return result; }
   @Post('runs/:id/download/prepare')
   @ApiParam({ name: 'id', description: 'Backup run ID.' })
   @ApiOperation({ summary: 'Prepare a backup download and report progress.' })

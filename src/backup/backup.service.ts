@@ -97,6 +97,26 @@ export class BackupService implements OnApplicationShutdown {
   }
 
   runsForJobPage(jobId: string, input: any = {}) { const { page, pageSize, offset, search } = this.pageOptions(input); const where = search ? `AND LOWER(COALESCE(r.filename,'')) LIKE ?` : ''; const params = search ? [jobId, `%${search}%`] : [jobId]; const total = Number((this.store.db.prepare(`SELECT COUNT(*) as count FROM backup_runs r WHERE r.job_id=? AND r.status='success' AND r.filename IS NOT NULL AND TRIM(r.filename) <> '' ${where}`).get(...params) as any)?.count || 0); const rows = this.store.db.prepare(`SELECT r.id,r.job_id as jobId,j.name as jobName,COALESCE(r.database_connection_id,j.database_connection_id) as databaseConnectionId,COALESCE(r.database_scope,j.database_scope) as databaseScope,COALESCE(r.database_names,j.database_names) as databaseNames,COALESCE(r.storage_target_id,j.storage_target_id) as storageTargetId,s.name as storageTargetName,r.status,r.started_at as startedAt,r.finished_at as finishedAt,r.filename,r.storage_location as storageLocation,r.size_bytes as sizeBytes,r.sha256,r.verification_status as verificationStatus,r.verification_message as verificationMessage,r.error_message as errorMessage FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id LEFT JOIN storage_targets s ON s.id=COALESCE(r.storage_target_id,j.storage_target_id) WHERE r.job_id=? AND r.status='success' AND r.filename IS NOT NULL AND TRIM(r.filename) <> '' ${where} ORDER BY r.started_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset) as any[]; return this.pageResult(rows.map(row => { let databases: string[] = []; try { databases = JSON.parse(String(row.databaseNames || '[]')); } catch {} return { ...row, databases }; }), total, page, pageSize); }
+  async reconcileMissingArtifacts() {
+    const rows = this.store.db.prepare(`SELECT r.id,r.filename,r.storage_location as storageLocation,r.storage_folder as storageFolder,COALESCE(r.storage_target_id,j.storage_target_id) as storageTargetId FROM backup_runs r JOIN backup_jobs j ON j.id=r.job_id WHERE r.status='success' AND r.filename IS NOT NULL AND TRIM(r.filename) <> '' ORDER BY r.started_at DESC`).all() as any[];
+    let checked = 0; let expired = 0; let errors = 0;
+    const errorItems: Array<{ runId: string; message: string }> = [];
+    for (const row of rows) {
+      checked++;
+      try {
+        const target = this.storage.get(String(row.storageTargetId || ''));
+        const available = await this.storage.isAvailable(target, String(row.filename), row.storageLocation ? String(row.storageLocation) : undefined, row.storageFolder ? String(row.storageFolder) : '');
+        if (!available) {
+          this.store.db.prepare(`UPDATE backup_runs SET status='expired',verification_status='expired',verification_message='Backup file was not found during reconciliation' WHERE id=? AND status='success'`).run(row.id);
+          expired++;
+        }
+      } catch (error: any) {
+        errors++;
+        if (errorItems.length < 20) errorItems.push({ runId: String(row.id), message: String(error?.message || error).slice(0, 300) });
+      }
+    }
+    return { ok: true, checked, expired, available: checked - expired - errors, errors, errorItems, completedAt: this.store.now() };
+  }
 
   liveProcesses() {
     const expiry = Date.now() - 15 * 60 * 1000;

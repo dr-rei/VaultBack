@@ -91,6 +91,57 @@ export class StorageService {
     }
   }
 
+  async isAvailable(target: StorageTarget, filename: string, location?: string, folder = '') {
+    this.validateFilename(filename); this.validateFolder(folder);
+    if (target.type === 'local') {
+      const directory = this.localDir(target);
+      const file = path.resolve(directory, folder, filename);
+      return isWithin(directory, file) && fs.existsSync(file);
+    }
+    if (target.type === 'ftp') {
+      const client = new Client(30000);
+      try {
+        await client.access(this.ftpConfig(target));
+        await client.size(this.ftpRemotePath(target, filename, folder));
+        return true;
+      } catch (error) {
+        if (this.isMissingRemote(error)) return false;
+        throw error;
+      } finally { client.close(); }
+    }
+    if (target.type === 'webdav') {
+      const base = String((target.config as any).url).replace(/\/$/, '');
+      let response = await this.webdavRequest(target, this.webdavPath(base, folder, filename), { method: 'HEAD', headers: this.webdavHeaders(target) });
+      if ([405, 501].includes(response.status)) response = await this.webdavRequest(target, this.webdavPath(base, folder, filename), { method: 'PROPFIND', headers: { ...this.webdavHeaders(target), Depth: '0' } });
+      if ([404, 410].includes(response.status)) return false;
+      if (response.status < 200 || response.status >= 300) throw new BadRequestException(`WebDAV availability check returned ${response.status}`);
+      return true;
+    }
+    if (target.type === 'google-drive') {
+      const id = String(location || '').replace(/^gdrive:\/\//, '');
+      if (!id || id === String(location)) return false;
+      const response = await this.googleDriveFetch(target, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,trashed`);
+      if ([404, 410].includes(response.status)) return false;
+      if (!response.ok) throw new Error(`Google Drive availability check returned ${response.status}`);
+      const result = await response.json() as any;
+      return result.trashed !== true;
+    }
+    if (target.type === 'onedrive') {
+      const c = target.config as any;
+      const id = String(location || '').replace(/^onedrive:\/\//, '');
+      const remotePath = [String(c.remotePath || '').replace(/^\/+|\/+$/g, ''), folder, filename].filter(Boolean).join('/');
+      const url = id && id !== String(location)
+        ? `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(id)}?$select=id,file`
+        : `https://graph.microsoft.com/v1.0/me/drive/${this.graphPath(remotePath)}?$select=id,file`;
+      const response = await this.oneDriveFetch(target, url);
+      if ([404, 410].includes(response.status)) return false;
+      if (!response.ok) throw new Error(`OneDrive availability check returned ${response.status}`);
+      const result = await response.json() as any;
+      return Boolean(result.file || result.id);
+    }
+    return false;
+  }
+
   async rotate(target: StorageTarget, prefix: string, retentionCount: number, folder = ''): Promise<string[]> {
     if (retentionCount < 1) return [];
     this.validateFolder(folder);

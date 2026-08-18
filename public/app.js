@@ -1328,6 +1328,25 @@ async function loadAudit() {
   const pagination = $('#audit-pagination');
   if (pagination) pagination.innerHTML = `<div class="pagination"><span>${state.audit.total} total</span><div><button class="small-button" ${state.audit.page <= 1 ? 'disabled' : ''} onclick="changeAuditPage(-1)">Previous</button><b>Page ${state.audit.page} of ${state.audit.pageCount}</b><button class="small-button" ${state.audit.page >= state.audit.pageCount ? 'disabled' : ''} onclick="changeAuditPage(1)">Next</button></div></div>`;
 }
+async function reconcileBackupArtifacts() {
+  const confirmed = await appDialog({ title: 'Check historical backups?', message: 'VaultBack will check each historical successful backup in its configured storage. Missing files will be marked expired. No backup files will be deleted.', confirmText: 'Start check', cancelText: 'Cancel' });
+  if (!confirmed) return;
+  const button = $('#reconcile-artifacts'); const resultBox = $('#artifact-reconcile-result');
+  try {
+    await withButtonBusy(button, async () => {
+      resultBox?.classList.remove('hidden');
+      if (resultBox) resultBox.textContent = 'Checking historical backup files…';
+      const result = await api('/api/runs/reconcile', { method: 'POST', body: JSON.stringify({}) });
+      if (resultBox) {
+        resultBox.textContent = result.errors
+          ? `Checked ${result.checked} record${result.checked === 1 ? '' : 's'}: ${result.expired} marked expired, ${result.available} available, ${result.errors} could not be checked.`
+          : `Checked ${result.checked} record${result.checked === 1 ? '' : 's'}: ${result.expired} marked expired and ${result.available} still available.`;
+      }
+      await loadCollection('runs');
+      toast(result.expired ? `${result.expired} missing backup record${result.expired === 1 ? '' : 's'} marked expired` : 'All historical backup files are available');
+    }, 'Checking…');
+  } catch (e) { if (resultBox) resultBox.textContent = e.message; toast(e.message, true); }
+}
 function changeAuditPage(delta) { state.audit.page = Math.max(1, Math.min(state.audit.pageCount, state.audit.page + delta)); void loadAudit(); }
 
 var vaultbackBaseRenderSettings = function() {
@@ -1384,6 +1403,8 @@ var vaultbackBaseRenderSettings = function() {
   if (migration) migration.classList.toggle('hidden', !isAdmin);
   $('#notification-escalation-panel')?.classList.toggle('hidden', !isAdmin);
   $('#audit-panel')?.classList.toggle('hidden', !isAdmin);
+  $('#artifact-reconcile-panel')?.classList.toggle('hidden', !isAdmin);
+  if (!document.body.dataset.artifactReconcileBound) { document.body.dataset.artifactReconcileBound = '1'; $('#reconcile-artifacts')?.addEventListener('click', () => void reconcileBackupArtifacts()); }
   if (isAdmin) void loadAudit();
 };
 
