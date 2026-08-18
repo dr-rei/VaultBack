@@ -92,7 +92,7 @@ export class StorageService {
   }
 
   async rotate(target: StorageTarget, prefix: string, retentionCount: number, folder = '') {
-    if (retentionCount < 1) return;
+    if (retentionCount < 1) return 0;
     this.validateFolder(folder);
     if (target.type === 'local') {
       const dir = path.resolve(this.localDir(target), folder);
@@ -100,18 +100,26 @@ export class StorageService {
       try {
         entries = fs.readdirSync(dir, { withFileTypes: true });
       } catch (error: any) {
-        if (error?.code === 'ENOENT') return;
+        if (error?.code === 'ENOENT') return 0;
         throw error;
       }
       const files = entries.filter(entry => entry.isFile() && entry.name.startsWith(prefix)).map(entry => entry.name).sort().reverse();
+      let removed = 0;
       for (const file of files.slice(retentionCount)) {
         try {
           fs.rmSync(path.join(dir, file), { force: true });
+          removed++;
         } catch (error: any) {
           if (error?.code !== 'ENOENT') throw error;
         }
       }
+      return removed;
     }
+    if (target.type === 'ftp') return this.rotateFtp(target, prefix, retentionCount, folder);
+    if (target.type === 'webdav') return this.rotateWebdav(target, prefix, retentionCount, folder);
+    if (target.type === 'google-drive') return this.rotateGoogleDrive(target, prefix, retentionCount, folder);
+    if (target.type === 'onedrive') return this.rotateOneDrive(target, prefix, retentionCount, folder);
+    return 0;
   }
 
   async test(target: StorageTarget) {
@@ -160,6 +168,98 @@ export class StorageService {
 
   private validateFilename(filename: string) { if (!filename || path.basename(filename) !== filename || /[\\/\0]/.test(filename)) throw new BadRequestException('Invalid backup filename'); }
   private validateFolder(folder: string) { if (folder && (folder === '.' || folder === '..' || path.basename(folder) !== folder || /[\\/\0]/.test(folder))) throw new BadRequestException('Invalid schedule backup folder'); }
+  private isMissingRemote(error: unknown) { const source = error as any; const code = String(source?.code || '').toUpperCase(); const message = String(source?.message || error || ''); return ['ENOENT', 'ENOTFOUND', '404', '410'].includes(code) || /(?:\b404\b|\b410\b|no such file|not found|does not exist|cannot find)/i.test(message); }
+  private rotationFiles<T extends { name: string }>(files: T[], prefix: string) { return files.filter(file => file.name.startsWith(prefix)).sort((left, right) => right.name.localeCompare(left.name)); }
+  private async rotateFtp(target: StorageTarget, prefix: string, retentionCount: number, folder: string) {
+    const client = new Client(30000);
+    try {
+      await client.access(this.ftpConfig(target));
+      let entries: any[];
+      try { entries = await client.list(this.ftpRemoteDirectory(target, folder)); } catch (error) { if (this.isMissingRemote(error)) return 0; throw error; }
+      const files = this.rotationFiles(entries.filter(entry => entry.type === 1), prefix);
+      let removed = 0;
+      for (const file of files.slice(retentionCount)) {
+        try { await client.remove(this.ftpRemotePath(target, file.name, folder)); removed++; } catch (error) { if (!this.isMissingRemote(error)) throw error; }
+      }
+      return removed;
+    } finally { client.close(); }
+  }
+  private webdavRotationFiles(body: Buffer, base: string) {
+    const xml = body.toString('utf8');
+    const responses = xml.match(/<(?:[\w.-]+:)?response\b[\s\S]*?<\/(?:[\w.-]+:)?response>/gi) || [];
+    return responses.flatMap(block => {
+      if (/<(?:[\w.-]+:)?collection\b/i.test(block)) return [];
+      const match = block.match(/<(?:[\w.-]+:)?href\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?href>/i);
+      if (!match) return [];
+      try {
+        const url = new URL(match[1].trim(), base);
+        const name = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
+        return name ? [{ name }] : [];
+      } catch { return []; }
+    });
+  }
+  private async rotateWebdav(target: StorageTarget, prefix: string, retentionCount: number, folder: string) {
+    const base = String((target.config as any).url).replace(/\/$/, '');
+    let response: { status: number; body?: Buffer };
+    try { response = await this.webdavRequest(target, this.webdavPath(base, folder), { method: 'PROPFIND', headers: { ...this.webdavHeaders(target), Depth: '1' } }); } catch (error) { if (this.isMissingRemote(error)) return 0; throw error; }
+    if ([404, 410].includes(response.status)) return 0;
+    if (response.status < 200 || response.status >= 300) throw new BadRequestException(`WebDAV rotation listing returned ${response.status}`);
+    const files = this.rotationFiles(this.webdavRotationFiles(response.body || Buffer.alloc(0), base), prefix);
+    let removed = 0;
+    for (const file of files.slice(retentionCount)) {
+      let deletion: { status: number };
+      try { deletion = await this.webdavRequest(target, this.webdavPath(base, folder, file.name), { method: 'DELETE', headers: this.webdavHeaders(target) }); } catch (error) { if (!this.isMissingRemote(error)) throw error; continue; }
+      if ([404, 410].includes(deletion.status)) continue;
+      if (deletion.status < 200 || deletion.status >= 300) throw new BadRequestException(`WebDAV could not delete an old backup (${deletion.status})`);
+      removed++;
+    }
+    return removed;
+  }
+  private async rotateGoogleDrive(target: StorageTarget, prefix: string, retentionCount: number, folder: string) {
+    const parent = await this.ensureGoogleDriveFolder(target, folder);
+    const files: Array<{ id: string; name: string }> = [];
+    let pageToken = '';
+    do {
+      const query = [`'${this.driveQueryValue(parent)}' in parents`, 'trashed=false', `name contains '${this.driveQueryValue(prefix)}'`].join(' and ');
+      const params = new URLSearchParams({ q: query, pageSize: '1000', fields: 'nextPageToken,files(id,name)', orderBy: 'name desc' });
+      if (pageToken) params.set('pageToken', pageToken);
+      const response = await this.googleDriveFetch(target, `https://www.googleapis.com/drive/v3/files?${params.toString()}`);
+      if (!response.ok) throw new Error(`Google Drive rotation listing returned ${response.status}`);
+      const result = await response.json() as any;
+      files.push(...(Array.isArray(result.files) ? result.files.filter((file: any) => file?.id && file?.name).map((file: any) => ({ id: String(file.id), name: String(file.name) })) : []));
+      pageToken = String(result.nextPageToken || '');
+    } while (pageToken);
+    let removed = 0;
+    for (const file of this.rotationFiles(files, prefix).slice(retentionCount)) {
+      const response = await this.googleDriveFetch(target, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}`, { method: 'DELETE' });
+      if ([404, 410].includes(response.status)) continue;
+      if (!response.ok) throw new Error(`Google Drive could not delete an old backup (${response.status})`);
+      removed++;
+    }
+    return removed;
+  }
+  private async rotateOneDrive(target: StorageTarget, prefix: string, retentionCount: number, folder: string) {
+    const base = String((target.config as any).remotePath || '').replace(/^\/+|\/+$/g, '');
+    const folderPath = [base, folder].filter(Boolean).join('/');
+    let endpoint = `https://graph.microsoft.com/v1.0/me/drive/${this.graphPath(folderPath)}/children?$select=id,name,file&$top=200`;
+    const files: Array<{ id: string; name: string }> = [];
+    while (endpoint) {
+      const response = await this.oneDriveFetch(target, endpoint);
+      if ([404, 410].includes(response.status)) return 0;
+      if (!response.ok) throw new Error(`OneDrive rotation listing returned ${response.status}`);
+      const result = await response.json() as any;
+      files.push(...(Array.isArray(result.value) ? result.value.filter((file: any) => file?.id && file?.name && file?.file).map((file: any) => ({ id: String(file.id), name: String(file.name) })) : []));
+      endpoint = String(result['@odata.nextLink'] || '');
+    }
+    let removed = 0;
+    for (const file of this.rotationFiles(files, prefix).slice(retentionCount)) {
+      const response = await this.oneDriveFetch(target, `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(file.id)}`, { method: 'DELETE' });
+      if ([404, 410].includes(response.status)) continue;
+      if (!response.ok) throw new Error(`OneDrive could not delete an old backup (${response.status})`);
+      removed++;
+    }
+    return removed;
+  }
   private uploadLocal(target: StorageTarget, localFile: string, filename: string, folder: string) { const dir = path.resolve(this.localDir(target), folder); if (!isWithin(this.localDir(target), dir)) throw new BadRequestException('Invalid local schedule backup folder'); ensureDirectory(dir); const destination = path.join(dir, filename); try { fs.copyFileSync(localFile, destination); } catch (error: any) { if (error?.code === 'ENOENT') throw new BadRequestException('The temporary backup file is no longer available to upload'); throw error; } return { location: destination }; }
   private localDir(target: StorageTarget) { const requested = String(target.config.path || ''); if (!requested) throw new Error('Local storage path is required'); const root = path.resolve(this.store.dataDir, 'backups'); const dir = path.resolve(requested); if (process.env.ALLOW_ANY_LOCAL_PATH !== 'true' && !isWithin(root, dir)) throw new Error(`Local paths must be inside ${root}`); return dir; }
   private ftpConfig(target: StorageTarget) { const c = target.config as any; return { host: String(c.host), port: Number(c.port || 21), user: String(c.username), password: String(c.password), secure: Boolean(c.secure) }; }
