@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Client } from 'basic-ftp';
+import { DeleteObjectsCommand, GetObjectCommand, GetObjectLockConfigurationCommand, HeadBucketCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -38,14 +39,14 @@ export class StorageService {
   save(input: Partial<StorageTarget> & { config?: Record<string, unknown> }) {
     this.store.assertEncryptionHealthy();
     if (!input.name || !input.type || !input.config) throw new BadRequestException('Name, type and configuration are required');
-    const allowed: StorageType[] = ['local', 'ftp', 'webdav', 'google-drive', 'onedrive'];
+    const allowed: StorageType[] = ['local', 'ftp', 'webdav', 'google-drive', 'onedrive', 's3'];
     if (!allowed.includes(input.type as StorageType)) throw new BadRequestException('Unsupported storage type');
     const id = input.id || crypto.randomUUID();
     const now = this.store.now();
     const oldRow = input.id ? this.store.db.prepare('SELECT config_enc FROM storage_targets WHERE id=?').get(input.id) as any : undefined;
     const oldConfig = oldRow?.config_enc ? this.store.decrypt<Record<string, unknown>>(oldRow.config_enc) : {};
     const config = { ...(input.config || {}) } as Record<string, unknown>;
-    for (const secret of ['password', 'token', 'accessToken', 'refreshToken', 'clientSecret', 'webhookToken', 'botToken']) {
+    for (const secret of ['password', 'token', 'accessToken', 'refreshToken', 'clientSecret', 'webhookToken', 'botToken', 'accessKeyId', 'secretAccessKey']) {
       if ((!Object.prototype.hasOwnProperty.call(config, secret) || String(config[secret] || '').trim() === '') && Object.prototype.hasOwnProperty.call(oldConfig, secret)) config[secret] = oldConfig[secret];
     }
     const encoded = this.store.encrypt(config);
@@ -63,6 +64,7 @@ export class StorageService {
       case 'webdav': return this.uploadWebdav(target, localFile, filename, folder);
       case 'google-drive': return this.uploadGoogleDrive(target, localFile, filename, folder);
       case 'onedrive': return this.uploadOneDrive(target, localFile, filename, folder);
+      case 's3': return this.uploadS3(target, localFile, filename, folder);
       default: throw new Error(`Storage adapter not implemented: ${target.type}`);
     }
   }
@@ -83,6 +85,7 @@ export class StorageService {
       else if (target.type === 'webdav') await this.downloadWebdav(target, filename, output, folder, progress);
       else if (target.type === 'google-drive') await this.downloadGoogleDrive(target, filename, location, output, progress);
       else if (target.type === 'onedrive') await this.downloadOneDrive(target, filename, location, output, folder, progress);
+      else if (target.type === 's3') await this.downloadS3(target, filename, location, output, folder, progress);
       else throw new BadRequestException(`Download is not supported for ${target.type}`);
       return { path: output, cleanup: true };
     } catch (error) {
@@ -139,6 +142,10 @@ export class StorageService {
       const result = await response.json() as any;
       return Boolean(result.file || result.id);
     }
+    if (target.type === 's3') {
+      try { await this.s3Client(target).send(new HeadObjectCommand({ Bucket: this.s3Bucket(target), Key: this.s3Key(target, filename, folder, location) })); return true; }
+      catch (error) { if (this.isMissingRemote(error)) return false; throw error; }
+    }
     return false;
   }
 
@@ -170,6 +177,7 @@ export class StorageService {
     if (target.type === 'webdav') return this.rotateWebdav(target, prefix, retentionCount, folder);
     if (target.type === 'google-drive') return this.rotateGoogleDrive(target, prefix, retentionCount, folder);
     if (target.type === 'onedrive') return this.rotateOneDrive(target, prefix, retentionCount, folder);
+    if (target.type === 's3') return this.rotateS3(target, prefix, retentionCount, folder);
     return [];
   }
 
@@ -188,6 +196,7 @@ export class StorageService {
     const c = target.config as any;
     if (target.type === 'google-drive' && !c.accessToken && !(c.refreshToken && c.clientId && c.clientSecret)) throw new Error('Google Drive needs an access token or refresh-token OAuth credentials');
     if (target.type === 'onedrive' && !c.accessToken && !(c.refreshToken && c.clientId && c.clientSecret)) throw new Error('OneDrive needs an access token or refresh-token OAuth credentials');
+    if (target.type === 's3') return this.testS3(target);
     return { ok: true, message: 'Cloud credentials are configured; a live upload will verify them' };
   }
 
@@ -217,9 +226,17 @@ export class StorageService {
     return this.store.db.prepare(`SELECT h.target_id as targetId,s.name,h.status,h.message,h.latency_ms as latencyMs,h.checked_at as checkedAt FROM storage_health h JOIN storage_targets s ON s.id=h.target_id ORDER BY s.name`).all();
   }
 
+  immutabilityStatus(targetId: string) {
+    const target = this.get(targetId);
+    const c = target.config as any;
+    const health = this.store.db.prepare('SELECT status,message FROM storage_health WHERE target_id=?').get(targetId) as any;
+    const verified = target.type === 's3' && Boolean(c.objectLockRequired) && health?.status === 'healthy' && /Object Lock is enabled/i.test(String(health.message || ''));
+    return { providerEnforced: verified, configured: target.type === 's3' && Boolean(c.objectLockRequired), provider: target.type === 's3' ? 'S3 Object Lock' : null, message: verified ? 'S3 Object Lock is enabled and was verified by the last health check.' : target.type === 's3' && c.objectLockRequired ? 'Object Lock is configured but has not been verified successfully.' : 'This storage provider does not expose provider-enforced WORM retention through VaultBack.' };
+  }
+
   private validateFilename(filename: string) { if (!filename || path.basename(filename) !== filename || /[\\/\0]/.test(filename)) throw new BadRequestException('Invalid backup filename'); }
   private validateFolder(folder: string) { if (folder && (folder === '.' || folder === '..' || path.basename(folder) !== folder || /[\\/\0]/.test(folder))) throw new BadRequestException('Invalid schedule backup folder'); }
-  private isMissingRemote(error: unknown) { const source = error as any; const code = String(source?.code || '').toUpperCase(); const message = String(source?.message || error || ''); return ['ENOENT', 'ENOTFOUND', '404', '410'].includes(code) || /(?:\b404\b|\b410\b|no such file|not found|does not exist|cannot find)/i.test(message); }
+  private isMissingRemote(error: unknown) { const source = error as any; const code = String(source?.code || '').toUpperCase(); const message = String(source?.message || error || ''); return ['ENOENT', 'ENOTFOUND', 'NOTFOUND', 'NOSUCHKEY', '404', '410'].includes(code) || /(?:\b404\b|\b410\b|no such file|not found|does not exist|cannot find)/i.test(message); }
   private rotationFiles<T extends { name: string }>(files: T[], prefix: string) { return files.filter(file => file.name.startsWith(prefix)).sort((left, right) => right.name.localeCompare(left.name)); }
   private async rotateFtp(target: StorageTarget, prefix: string, retentionCount: number, folder: string) {
     const client = new Client(30000);
@@ -311,6 +328,14 @@ export class StorageService {
     }
     return removed;
   }
+  private s3Config(target: StorageTarget) { const c = target.config as any; const bucket = String(c.bucket || '').trim(); const region = String(c.region || 'us-east-1').trim(); const accessKeyId = String(c.accessKeyId || '').trim(); const secretAccessKey = String(c.secretAccessKey || '').trim(); if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) throw new BadRequestException('Enter a valid S3 bucket name'); if (!accessKeyId || !secretAccessKey) throw new BadRequestException('S3 access key and secret key are required'); let endpoint: string | undefined; if (c.endpoint) { try { const parsed = new URL(String(c.endpoint)); if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error(); endpoint = parsed.toString().replace(/\/$/, ''); } catch { throw new BadRequestException('S3 endpoint must be a valid http:// or https:// URL'); } } return { bucket, region, accessKeyId, secretAccessKey, endpoint, forcePathStyle: Boolean(c.forcePathStyle), prefix: String(c.prefix || '').replace(/^\/+|\/+$/g, ''), objectLockRequired: Boolean(c.objectLockRequired), retentionDays: Math.max(1, Math.min(3650, Number(c.retentionDays || 30))) }; }
+  private s3Client(target: StorageTarget) { const c = this.s3Config(target); return new S3Client({ region: c.region, endpoint: c.endpoint, forcePathStyle: c.forcePathStyle, credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey } }); }
+  private s3Bucket(target: StorageTarget) { return this.s3Config(target).bucket; }
+  private s3Key(target: StorageTarget, filename: string, folder = '', location?: string) { const raw = String(location || '').replace(/^s3:\/\/[^/]+\/?/, ''); if (raw && raw !== String(location)) return raw; const c = this.s3Config(target); return [c.prefix, folder, filename].filter(Boolean).join('/'); }
+  private async testS3(target: StorageTarget) { const config = this.s3Config(target); const client = this.s3Client(target); await client.send(new HeadBucketCommand({ Bucket: config.bucket })); if (config.objectLockRequired) { if (config.retentionDays < 1) throw new BadRequestException('Object Lock retention must be at least one day'); const result = await client.send(new GetObjectLockConfigurationCommand({ Bucket: config.bucket })); if (result.ObjectLockConfiguration?.ObjectLockEnabled !== 'Enabled') throw new BadRequestException('S3 Object Lock is required but is not enabled on this bucket. Object Lock must be enabled when the bucket is created; it cannot be added later.'); return { ok: true, immutable: true, message: `S3 connection succeeded; Object Lock is enabled with ${config.retentionDays}-day COMPLIANCE retention.` }; } return { ok: true, immutable: false, message: 'S3 connection succeeded, but Object Lock is not enabled; retention rotation can delete old objects.' }; }
+  private async uploadS3(target: StorageTarget, localFile: string, filename: string, folder: string) { const config = this.s3Config(target); const input: any = { Bucket: config.bucket, Key: this.s3Key(target, filename, folder), Body: fs.createReadStream(localFile), ContentType: 'application/octet-stream' }; if (config.objectLockRequired) { input.ObjectLockMode = 'COMPLIANCE'; input.ObjectLockRetainUntilDate = new Date(Date.now() + config.retentionDays * 86400000); input.ContentMD5 = await this.fileDigest(localFile, 'md5', 'base64'); } await this.s3Client(target).send(new PutObjectCommand(input)); return { location: `s3://${config.bucket}/${input.Key}` }; }
+  private async downloadS3(target: StorageTarget, filename: string, location: string | undefined, output: string, folder: string, progress?: StorageDownloadProgress) { const config = this.s3Config(target); const result: any = await this.s3Client(target).send(new GetObjectCommand({ Bucket: config.bucket, Key: this.s3Key(target, filename, folder, location) })); if (!result.Body) throw new BadRequestException(`S3 returned no content for ${filename}`); const totalBytes = Number(result.ContentLength || 0) || undefined; let bytesDownloaded = 0; const source: any = result.Body; source.on?.('data', (chunk: Buffer) => { bytesDownloaded += chunk.length; progress?.({ bytesDownloaded, totalBytes }); }); await pipeline(source, fs.createWriteStream(output, { mode: 0o600 })); progress?.({ bytesDownloaded, totalBytes }); }
+  private async rotateS3(target: StorageTarget, prefix: string, retentionCount: number, folder: string) { const config = this.s3Config(target); if (config.objectLockRequired) return []; const client = this.s3Client(target); const prefixKey = [config.prefix, folder, prefix].filter(Boolean).join('/'); const keys: string[] = []; let token: string | undefined; do { const result = await client.send(new ListObjectsV2Command({ Bucket: config.bucket, Prefix: prefixKey, ContinuationToken: token })); keys.push(...(result.Contents || []).map(item => String(item.Key || '')).filter(Boolean)); token = result.IsTruncated ? result.NextContinuationToken : undefined; } while (token); const removed: string[] = []; for (const key of keys.sort().reverse().slice(retentionCount)) { try { await client.send(new DeleteObjectsCommand({ Bucket: config.bucket, Delete: { Objects: [{ Key: key }], Quiet: true } })); removed.push(key.split('/').pop() || key); } catch (error) { if (!this.isMissingRemote(error)) throw error; } } return removed; }
   private uploadLocal(target: StorageTarget, localFile: string, filename: string, folder: string) { const dir = path.resolve(this.localDir(target), folder); if (!isWithin(this.localDir(target), dir)) throw new BadRequestException('Invalid local schedule backup folder'); ensureDirectory(dir); const destination = path.join(dir, filename); try { fs.copyFileSync(localFile, destination); } catch (error: any) { if (error?.code === 'ENOENT') throw new BadRequestException('The temporary backup file is no longer available to upload'); throw error; } return { location: destination }; }
   private localDir(target: StorageTarget) { const requested = String(target.config.path || ''); if (!requested) throw new Error('Local storage path is required'); const root = path.resolve(this.store.dataDir, 'backups'); const dir = path.resolve(requested); if (process.env.ALLOW_ANY_LOCAL_PATH !== 'true' && !isWithin(root, dir)) throw new Error(`Local paths must be inside ${root}`); return dir; }
   private ftpConfig(target: StorageTarget) { const c = target.config as any; return { host: String(c.host), port: Number(c.port || 21), user: String(c.username), password: String(c.password), secure: Boolean(c.secure) }; }
@@ -431,5 +456,6 @@ export class StorageService {
     this.store.db.prepare('UPDATE storage_targets SET config_enc=? WHERE id=?').run(this.store.encrypt(c), target.id); target.config = c;
     return String(c.accessToken);
   }
-  private redact(config: Record<string, unknown>) { const copy = { ...config }; for (const key of ['password', 'token', 'accessToken', 'refreshToken', 'clientSecret', 'webhookToken', 'botToken']) delete copy[key]; return copy; }
+  private async fileDigest(file: string, algorithm: 'md5' | 'sha256', encoding: crypto.BinaryToTextEncoding) { const hash = crypto.createHash(algorithm); for await (const chunk of fs.createReadStream(file)) hash.update(chunk); return hash.digest(encoding); }
+  private redact(config: Record<string, unknown>) { const copy = { ...config }; for (const key of ['password', 'token', 'accessToken', 'refreshToken', 'clientSecret', 'webhookToken', 'botToken', 'accessKeyId', 'secretAccessKey']) delete copy[key]; return copy; }
 }

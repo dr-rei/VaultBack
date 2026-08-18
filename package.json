@@ -1,6 +1,6 @@
 {
   "name": "vaultback-db-backup",
-  "version": "0.1.38",
+  "version": "0.1.39",
   "private": true,
   "description": "Secure, self-hosted database backup manager with a GUI",
   "license": "UNLICENSED",
@@ -23,6 +23,7 @@
     "reset-admin": "node scripts/reset-admin.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1112.0",
     "@fastify/cookie": "^11.0.2",
     "@fastify/helmet": "^13.0.1",
     "@fastify/rate-limit": "^10.2.2",

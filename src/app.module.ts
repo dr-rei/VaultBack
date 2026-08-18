@@ -11,8 +11,9 @@ import { RequestContextMiddleware } from './common/request-context.middleware';
 import { HealthController } from './system/health.controller';
 import { TerminusModule } from '@nestjs/terminus';
 import { VaultbackHealthIndicator } from './system/health.controller';
+import { RecoveryModule } from './recovery/recovery.module';
 
-@Module({ imports: [ConfigModule.forRoot({ isGlobal: true, cache: true }), TerminusModule, CommonModule, DatabaseModule, AuthModule, StorageModule, BackupModule, SystemModule], controllers: [AppController, HealthController], providers: [VaultbackHealthIndicator] })
+@Module({ imports: [ConfigModule.forRoot({ isGlobal: true, cache: true }), TerminusModule, CommonModule, DatabaseModule, AuthModule, StorageModule, BackupModule, SystemModule, RecoveryModule], controllers: [AppController, HealthController], providers: [VaultbackHealthIndicator] })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer.apply(RequestContextMiddleware).forRoutes('*');

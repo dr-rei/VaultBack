@@ -4,16 +4,17 @@
 
 VaultBack is a self-hosted database backup manager published at `https://github.com/dr-rei/VaultBack`. The application is a NestJS/Fastify backend and a vanilla JavaScript frontend served by the same Node.js process. It stores application state in SQLite under `DATA_DIR`, encrypts database and storage credentials at rest, and uses portable MariaDB-compatible client tools stored inside the application directory.
 
-The latest published release is `v0.1.21`. Do not create or publish a new release unless the user explicitly requests it.
+The latest published release is `v0.1.39`. Do not create or publish a new release unless the user explicitly requests it.
 
 ## Repository Structure
 
 - `src/main.ts`: application bootstrap, host/protocol checks, rate limiting, static files, and error handling.
-- `src/auth/`, `src/database/`, `src/storage/`, `src/backup/`, `src/system/`: backend feature boundaries.
+- `src/auth/`, `src/database/`, `src/storage/`, `src/backup/`, `src/system/`, `src/recovery/`: backend feature boundaries.
 - `src/common/`: shared filters, guards, validation, and cross-cutting behavior.
 - `src/backup/backup.service.ts`: scheduling, dump/restore execution, rotation, downloads, retries, and live process state.
+- `src/recovery/`: Recovery Assurance plans, isolated restore rehearsals, policy findings, PITR/binlog inspection, recovery runbooks, and the administrator-only fleet enrollment foundation.
 - `src/database/database.service.ts`: SQLite schema creation and migration-safe upgrades.
-- `src/system/realtime.service.ts`: authenticated Server-Sent Events (SSE), not WebSockets. Topics include processes, backup runs, sessions, rate limits, updates, storage health, and downloads.
+- `src/system/realtime.service.ts`: authenticated Server-Sent Events (SSE), not WebSockets. Topics include processes, backup runs, sessions, rate limits, updates, storage health, downloads, and admin recovery evidence.
 - `public/index.html`: shared application shell and route markup.
 - `public/app.js`: routing, API calls, rendering, modals, sidebar, themes, SSE subscriptions, and UI state.
 - `public/styles.css`: canonical light/dark responsive stylesheet. Do not reintroduce `redesign.css`.
@@ -60,7 +61,11 @@ Use two-space indentation, semicolons, single quotes, PascalCase classes, camelC
 - `NODE_ENV=production` enables rate limiting and generic 500 responses. `RATE_LIMIT_PER_MINUTE` defaults to `800`; `MAX_LOGIN_SESSIONS_PER_USER=0` means unlimited.
 - `APP_DOMAIN` restricts exact allowed hostnames in production. `APP_PROTOCOL` accepts `http`, `https`, or `both`; HTTPS requires certificate and key paths.
 - Live SSE connections are authenticated and topic-filtered by role. Do not expose admin-only topics or credentials in snapshots/logs.
-- Bundled tools are managed under `tools/<engine>/<platform>-<arch>/bin/`; do not reintroduce OS `PATH` dependency or plaintext credential logging.
+- Recovery tests must use generated disposable database names, never overwrite a destination, verify the restored result, and attempt cleanup in `finally`. A cleanup warning must remain visible as evidence.
+- PITR readiness is only a capability assessment until binlogs are copied, retained without gaps, and a point-in-time restore is tested. Do not label `log_bin=ON` as a complete recovery guarantee.
+- Existing local/FTP/WebDAV/Google Drive/OneDrive adapters must not be described as immutable without provider-enforced WORM/Object Lock evidence.
+- Bundled tools are managed under `tools/<engine>/<platform>-<arch>/bin/`; do not reintroduce OS `PATH` dependency or plaintext credential logging. S3-compatible Object Lock is the only provider-enforced immutability path currently supported; it must be verified by a successful storage health check before policy code treats it as protected.
+- PITR status is intentionally separate from PITR capture: `inspectPitr()` only inspects source capability, while the admin capture endpoint uploads raw binlog artifacts and checksums. Do not describe capture as automatic binlog application or a complete point-in-time restore.
 - The GUI restart action sends a graceful termination signal and needs PM2, aaPanel, Docker, or systemd to relaunch the process. Plain `npm start` will not self-restart.
 - Treat `npm run reset-data` as destructive and require explicit confirmation before using it on real data.
 
@@ -69,5 +74,7 @@ Use two-space indentation, semicolons, single quotes, PascalCase classes, camelC
 The release workflow `.github/workflows/release.yml` runs on tags matching `v*.*.*`, verifies the tag against `package.json`, builds Linux x64 and Windows x64 archives, creates `latest.json`, and publishes a GitHub release. Update both `package.json` and `package-lock.json`, run verification, commit with a conventional message, create the matching tag, and push the branch and tag only when authorized.
 
 For aaPanel, use `docs/AA_PANEL.md` and `scripts/install-aapanel.sh`. The aaPanel installer is install-only: it downloads and verifies the release, preserves `.env`/`data`/`tools`, installs dependencies as the `www` user, and builds the app; PM2 start/stop/restart remains controlled by aaPanel’s GUI.
+
+Recovery Assurance design and operational limits are documented in `docs/RECOVERY_ASSURANCE.md`; security assumptions and attacker stories are in `docs/THREAT_MODEL.md`.
 
 Use commit prefixes such as `feat:`, `fix:`, `refactor:`, and `docs:` followed by an imperative description. Keep changes narrowly scoped and document new environment variables, migrations, and restart requirements.

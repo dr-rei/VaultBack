@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 import { ServerResponse } from 'node:http';
 
-export type RealtimeTopic = 'processes' | 'backup_runs' | 'sessions' | 'rate_limit' | 'updates' | 'storage_health' | 'downloads';
+export type RealtimeTopic = 'processes' | 'backup_runs' | 'sessions' | 'rate_limit' | 'updates' | 'storage_health' | 'downloads' | 'recovery_tests';
 type Role = 'admin' | 'operator' | 'viewer' | string;
 type Connection = {
   id: string;
@@ -36,7 +36,7 @@ export class RealtimeService implements OnApplicationShutdown {
 
   allowedTopics(role: Role): RealtimeTopic[] {
     const common: RealtimeTopic[] = ['processes', 'backup_runs', 'storage_health', 'downloads'];
-    return role === 'admin' ? [...common, 'sessions', 'rate_limit', 'updates'] : common;
+    return role === 'admin' ? [...common, 'sessions', 'rate_limit', 'updates', 'recovery_tests'] : common;
   }
 
   connect(response: ServerResponse, userId: string, role: Role, ip: string, sessionToken: string, requestedTopics: string[] = [], query: Record<string, string> = {}) {

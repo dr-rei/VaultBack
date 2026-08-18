@@ -418,6 +418,33 @@ export class BackupService implements OnApplicationShutdown {
     return { ok: true, completed, failed: lastError ? 1 : 0 };
   }
 
+  /**
+   * Restore one completed artifact into a generated disposable database.
+   * This is deliberately separate from the user-facing restore endpoint so a
+   * recovery test can never request an overwrite or choose an arbitrary name.
+   */
+  async restoreRunForRecoveryTest(runId: string, connectionId: string, testDatabaseName: string) {
+    const safeName = this.safeDatabaseName(testDatabaseName);
+    const destination = this.getConnection(connectionId);
+    let result: any;
+    let cleanupOk = true;
+    let cleanupMessage = '';
+    try {
+      result = await this.restoreRun(runId, {
+        connectionId,
+        mode: 'new',
+        databaseName: safeName,
+        overwriteConfirmed: false,
+        verifyAfterRestore: true
+      });
+    } finally {
+      try {
+        await this.executeMysql(destination, `DROP DATABASE IF EXISTS ${this.quoteIdentifier(safeName)}`);
+      } catch (error: any) { cleanupOk = false; cleanupMessage = String(error?.message || error).slice(0, 500); }
+    }
+    return { ...result, cleanupOk, cleanupMessage };
+  }
+
   private async run(jobId: string, attempt = 0, connectionIdOverride?: string, storageTargetIdOverride?: string, databasesOverride?: string[]): Promise<any> {
     if (this.shuttingDown) throw new Error('VaultBack is shutting down');
     if (!connectionIdOverride && !storageTargetIdOverride && !databasesOverride) {
@@ -551,6 +578,14 @@ export class BackupService implements OnApplicationShutdown {
     for (const root of portableRoots) for (const name of binaryNames) { const candidate = path.join(root, name); if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate; }
     return path.join(toolsRoot, engineFolder, platformFolder, 'bin', process.platform === 'win32' ? `${executable}.exe` : executable);
   }
+  resolveBinlogBinary(engine: string): string {
+    const engineFolder = engine === 'mariadb' ? 'mariadb' : 'mysql';
+    const names = process.platform === 'win32' ? ['mysqlbinlog.exe', 'mariadb-binlog.exe', 'mysqlbinlog', 'mariadb-binlog'] : ['mysqlbinlog', 'mariadb-binlog'];
+    const platformFolder = `${process.platform}-${process.arch}`; const toolsRoot = path.join(process.cwd(), 'tools');
+    const roots = [path.join(toolsRoot, engineFolder, platformFolder, 'bin'), path.join(toolsRoot, engineFolder, 'bin'), ...(engine === 'mysql' ? [path.join(toolsRoot, 'mariadb', platformFolder, 'bin'), path.join(toolsRoot, 'mariadb', 'bin')] : [])];
+    for (const root of roots) for (const name of names) { const candidate = path.join(root, name); if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate; }
+    return path.join(toolsRoot, engineFolder, platformFolder, 'bin', process.platform === 'win32' ? 'mysqlbinlog.exe' : 'mysqlbinlog');
+  }
   private executableAvailable(binary: string) {
     try { return fs.existsSync(binary) && fs.statSync(binary).isFile(); } catch { return false; }
   }
@@ -594,6 +629,54 @@ export class BackupService implements OnApplicationShutdown {
       if (databases.length && details.every(item => item.tables === 0)) return { status: 'warning', message: 'Destination databases exist, but no tables were found', details };
       return { status: 'passed', message: `Verified ${details.length || 'the'} restored database connection${details.length === 1 ? '' : 's'}`, details };
     } catch (error: any) { return { status: 'failed', message: String(error?.message || error).slice(0, 500), details: {} }; }
+  }
+  async inspectPitr(connectionId: string) {
+    const connection = this.getConnection(connectionId);
+    return this.withNativeDatabaseConnection(connection, async client => {
+      const [variables] = await client.query("SHOW VARIABLES WHERE Variable_name IN ('log_bin','binlog_format','gtid_mode','gtid_binlog_pos','gtid_executed')");
+      const values: Record<string, string> = {};
+      for (const row of variables as any[]) values[String(row.Variable_name || row.variable_name)] = String(row.Value ?? row.value ?? '');
+      let logs: any[] = [];
+      try { const [rows] = await client.query('SHOW BINARY LOGS'); logs = rows as any[]; } catch { logs = []; }
+      const enabled = /^(ON|1|TRUE)$/i.test(values.log_bin || '');
+      return { status: enabled ? 'ready' : 'disabled', message: enabled ? 'Binary logging is enabled; retain and monitor binlog continuity before relying on point-in-time recovery.' : 'Binary logging is disabled. Point-in-time recovery is unavailable until it is enabled and retained safely.', binaryLogging: enabled, binlogFormat: values.binlog_format || null, gtid: values.gtid_executed || values.gtid_binlog_pos || null, logCount: logs.length, earliestLog: logs[0]?.Log_name || null, latestLog: logs[logs.length - 1]?.Log_name || null };
+    });
+  }
+  async capturePitr(connectionId: string, storageTargetId: string) {
+    const connection = this.getConnection(connectionId);
+    const target = this.storage.get(storageTargetId);
+    const inspection = await this.inspectPitr(connectionId);
+    if (!inspection.binaryLogging) throw new BadRequestException('Binary logging is disabled. Enable and retain binary logs before starting PITR capture.');
+    if (!inspection.latestLog) throw new BadRequestException('The database reported no available binary log files.');
+    const logs = await this.withNativeDatabaseConnection(connection, async client => { const [rows] = await client.query('SHOW BINARY LOGS'); return (rows as any[]).map(row => String(row.Log_name || row.log_name || '')).filter(Boolean); });
+    if (!logs.length) throw new BadRequestException('The database reported no available binary log files.');
+    const captureId = crypto.randomUUID();
+    const tempDir = fs.mkdtempSync(path.join(this.store.dataDir, 'tmp', `pitr-${captureId}-`));
+    const resultPrefix = path.join(tempDir, 'pitr-');
+    const binary = this.resolveBinlogBinary(connection.engine);
+    const args = [...this.clientToolArgs(binary), '--read-from-remote-server', '--raw', `--host=${connection.host}`, `--port=${connection.port}`, `--user=${connection.username}`, `--result-file=${resultPrefix}`, ...(connection.ssl ? ['--ssl'] : ['--skip-ssl']), ...logs];
+    const env = { ...process.env }; if (connection.password) env.MYSQL_PWD = connection.password; else delete env.MYSQL_PWD;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let stderr = ''; let child: ReturnType<typeof spawn>;
+        try { child = spawn(binary, args, { env, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true }); }
+        catch (error: any) { reject(new BadRequestException(this.clientStartMessage(binary, error))); return; }
+        child.stderr?.on('data', chunk => { stderr += chunk.toString(); });
+        child.on('error', error => reject(new BadRequestException(this.clientStartMessage(binary, error))));
+        child.on('close', code => code === 0 ? resolve() : reject(new BadRequestException(`${binary} binlog capture failed with code ${code}: ${stderr.slice(0, 1000)}`)));
+      });
+      const files = fs.readdirSync(tempDir, { withFileTypes: true }).filter(entry => entry.isFile()).map(entry => entry.name);
+      if (!files.length) throw new BadRequestException('The binlog client completed without producing any raw binlog files.');
+      const folder = `pitr/${safeFilePart(connectionId)}/${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      const artifacts = [];
+      for (const file of files) {
+        const source = path.join(tempDir, file); const binlogName = file.startsWith('pitr-') ? file.slice(5) : file; const uploaded = await this.storage.upload(target, source, binlogName, folder); const sizeBytes = fs.statSync(source).size; const sha256 = await this.sha256(source); const id = crypto.randomUUID();
+        this.store.db.prepare('INSERT OR REPLACE INTO pitr_artifacts (id,connection_id,storage_target_id,binlog_name,storage_location,storage_folder,size_bytes,sha256,captured_at,status,message) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, connectionId, storageTargetId, binlogName, uploaded.location, folder, sizeBytes, sha256, this.store.now(), 'captured', 'Raw binary log captured and uploaded');
+        artifacts.push({ id, binlogName, sizeBytes, sha256, storageLocation: uploaded.location, storageFolder: folder });
+      }
+      this.store.db.prepare('INSERT INTO pitr_sources (connection_id,storage_target_id,enabled,capture_interval_minutes,last_scan_at,last_capture_at,binlog_status,earliest_binlog_at,latest_binlog_at,checkpoint_json,gap_status,message) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET storage_target_id=excluded.storage_target_id,last_scan_at=excluded.last_scan_at,last_capture_at=excluded.last_capture_at,binlog_status=excluded.binlog_status,earliest_binlog_at=excluded.earliest_binlog_at,latest_binlog_at=excluded.latest_binlog_at,checkpoint_json=excluded.checkpoint_json,gap_status=excluded.gap_status,message=excluded.message').run(connectionId, storageTargetId, 1, 15, this.store.now(), this.store.now(), 'captured', inspection.earliestLog, inspection.latestLog, JSON.stringify({ capturedLogs: logs, capturedAt: this.store.now() }), 'unknown', `Captured ${artifacts.length} raw binlog file(s). Configure a frequent capture interval and monitor gaps.`);
+      return { ok: true, connectionId, storageTargetId, captured: artifacts.length, artifacts, warning: 'This captures raw binlog files for later PITR processing. VaultBack does not apply binlogs to a destination automatically yet.' };
+    } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
   }
   private async listAvailableTables(connection: DatabaseConnection, database: string) {
     if (this.isVirtualDatabase(database)) return { tables: [], views: [] };

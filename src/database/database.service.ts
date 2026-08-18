@@ -61,8 +61,16 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       CREATE TABLE IF NOT EXISTS backup_job_connections (job_id TEXT NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE, connection_id TEXT NOT NULL REFERENCES database_connections(id) ON DELETE CASCADE, database_names TEXT NOT NULL DEFAULT '[]', position INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (job_id, connection_id));
       CREATE TABLE IF NOT EXISTS backup_job_storages (job_id TEXT NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE, storage_target_id TEXT NOT NULL REFERENCES storage_targets(id) ON DELETE CASCADE, position INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (job_id, storage_target_id));
       CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, user_id TEXT, action TEXT NOT NULL, entity_type TEXT, entity_id TEXT, metadata_json TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS recovery_plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, job_id TEXT NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE, destination_connection_id TEXT NOT NULL REFERENCES database_connections(id) ON DELETE CASCADE, cron_expression TEXT NOT NULL DEFAULT '0 4 * * 0', timezone TEXT NOT NULL DEFAULT 'UTC', enabled INTEGER NOT NULL DEFAULT 1, test_database_prefix TEXT NOT NULL DEFAULT 'vaultback_recovery_test', last_test_at TEXT, next_test_at TEXT, last_status TEXT, last_message TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS recovery_tests (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES recovery_plans(id) ON DELETE CASCADE, source_run_id TEXT REFERENCES backup_runs(id) ON DELETE SET NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, test_database_name TEXT, destination_connection_id TEXT, rpo_seconds INTEGER, rto_seconds INTEGER, objects_expected INTEGER, objects_restored INTEGER, evidence_json TEXT NOT NULL DEFAULT '{}', error_message TEXT);
+      CREATE TABLE IF NOT EXISTS pitr_sources (connection_id TEXT PRIMARY KEY REFERENCES database_connections(id) ON DELETE CASCADE, storage_target_id TEXT REFERENCES storage_targets(id) ON DELETE SET NULL, enabled INTEGER NOT NULL DEFAULT 0, capture_interval_minutes INTEGER NOT NULL DEFAULT 15, last_scan_at TEXT, last_capture_at TEXT, binlog_status TEXT NOT NULL DEFAULT 'unknown', earliest_binlog_at TEXT, latest_binlog_at TEXT, checkpoint_json TEXT NOT NULL DEFAULT '{}', gap_status TEXT NOT NULL DEFAULT 'unknown', message TEXT NOT NULL DEFAULT 'Not checked');
+      CREATE TABLE IF NOT EXISTS pitr_artifacts (id TEXT PRIMARY KEY, connection_id TEXT NOT NULL REFERENCES database_connections(id) ON DELETE CASCADE, storage_target_id TEXT NOT NULL REFERENCES storage_targets(id) ON DELETE CASCADE, binlog_name TEXT NOT NULL, storage_location TEXT, storage_folder TEXT NOT NULL, size_bytes INTEGER, sha256 TEXT, captured_at TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', UNIQUE(connection_id, storage_target_id, binlog_name, storage_folder));
+      CREATE TABLE IF NOT EXISTS fleet_servers (id TEXT PRIMARY KEY, name TEXT NOT NULL, installation_id TEXT NOT NULL UNIQUE, enrollment_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', last_seen_at TEXT, revoked_at TEXT, created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_runs_job_started ON backup_runs(job_id, started_at DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON backup_jobs(enabled, next_run_at);
+      CREATE INDEX IF NOT EXISTS idx_recovery_tests_plan_started ON recovery_tests(plan_id, started_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_recovery_plans_next_test ON recovery_plans(enabled, next_test_at);
+      CREATE INDEX IF NOT EXISTS idx_pitr_artifacts_connection_captured ON pitr_artifacts(connection_id, captured_at DESC);
     `);
     try { this.db.exec("ALTER TABLE database_connections ADD COLUMN database_scope TEXT NOT NULL DEFAULT 'selected'"); } catch {}
     try { this.db.exec("ALTER TABLE database_connections ADD COLUMN database_names TEXT NOT NULL DEFAULT '[]'"); } catch {}
@@ -88,6 +96,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     try { this.db.exec("ALTER TABLE backup_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1"); } catch {}
     try { this.db.exec("INSERT OR IGNORE INTO backup_job_connections (job_id,connection_id,database_names,position) SELECT id,database_connection_id,database_names,0 FROM backup_jobs WHERE database_connection_id IS NOT NULL"); } catch {}
     try { this.db.exec("INSERT OR IGNORE INTO backup_job_storages (job_id,storage_target_id,position) SELECT id,storage_target_id,0 FROM backup_jobs WHERE storage_target_id IS NOT NULL"); } catch {}
+    try { this.db.exec("ALTER TABLE pitr_sources ADD COLUMN storage_target_id TEXT REFERENCES storage_targets(id) ON DELETE SET NULL"); } catch {}
+    try { this.db.exec("ALTER TABLE pitr_sources ADD COLUMN capture_interval_minutes INTEGER NOT NULL DEFAULT 15"); } catch {}
+    try { this.db.exec("ALTER TABLE pitr_sources ADD COLUMN last_capture_at TEXT"); } catch {}
   }
 
   encrypt(value: unknown): string {

@@ -16,8 +16,10 @@ VaultBack is designed for self-hosted applications, small teams, developers, and
 - **Flexible backup scope:** back up every database visible to a connection or choose specific databases from a searchable, connection-grouped list.
 - **Multiple archive layouts:** create a single SQL dump, one SQL file per database, or one SQL file per table inside a ZIP archive.
 - **Compression and protection:** use GZIP or ZIP compression, optional AES-256-GCM backup-file encryption, checksums, and archive verification.
-- **Local and remote storage:** deliver backups to local folders, FTP/FTPS, WebDAV/Synology, Google Drive, or OneDrive, with a separate folder for each schedule.
+- **Local and remote storage:** deliver backups to local folders, FTP/FTPS, WebDAV/Synology, Google Drive, OneDrive, or S3-compatible storage, with a separate folder for each schedule. S3 Object Lock can be verified and used for provider-enforced COMPLIANCE retention.
 - **Recovery workflows:** download verified backup files or restore them over an existing database or into a new database name.
+- **Recovery Assurance:** schedule isolated restore rehearsals, record RPO/RTO evidence, inspect PITR/binlog readiness, capture raw binlog files with checksums, follow recovery runbooks, and review backup-policy findings before an incident. Automatic binlog application/PITR restore is not claimed as supported yet.
+- **Resilience foundation:** keep an administrator-only registry of enrolled VaultBack installations with revocable, hashed one-time enrollment tokens.
 - **Operations visibility:** monitor backup progress, live process logs, storage health, stale artifacts, active sessions, API rate-limit usage, and audit events.
 - **Access control:** use administrator, operator, and viewer roles with protected administrator actions and encrypted credentials at rest.
 - **Portable database tools:** use application-managed MySQL/MariaDB client utilities instead of depending on database commands installed in the operating system `PATH`.
@@ -47,6 +49,8 @@ VaultBack can run locally or under PM2, aaPanel, Docker, systemd, or another pro
 - [Versioned releases and in-app updates](docs/RELEASES.md)
 - [Portable database-tools guide](tools/README.md)
 - [Terms of use and third-party component notice](docs/TERMS_OF_USE.md)
+- [Recovery Assurance, PITR, and resilience operations](docs/RECOVERY_ASSURANCE.md)
+- [Security threat model](docs/THREAT_MODEL.md)
 
 ## Architecture and persistent data
 

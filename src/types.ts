@@ -1,5 +1,5 @@
 export type DatabaseEngine = 'mysql' | 'mariadb';
-export type StorageType = 'local' | 'ftp' | 'webdav' | 'google-drive' | 'onedrive';
+export type StorageType = 'local' | 'ftp' | 'webdav' | 'google-drive' | 'onedrive' | 's3';
 
 export interface BackupObjectOptions {
   views: boolean;
