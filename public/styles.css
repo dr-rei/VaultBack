@@ -395,6 +395,45 @@ body .auth-card .brand small {
   color: var(--refresh-teal-dark);
 }
 
+body .auth-card .password-input-wrap {
+  position: relative;
+}
+
+body .auth-card .password-input-wrap input {
+  width: 100%;
+  padding-right: 48px;
+}
+
+body .auth-card .password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #527276;
+  font-size: 18px;
+  line-height: 1;
+  transform: translateY(-50%);
+  transition: background .18s ease, color .18s ease;
+}
+
+body .auth-card .password-toggle:hover {
+  background: #e7f4f1;
+  color: var(--refresh-teal-dark);
+}
+
+body .auth-card .password-toggle:focus-visible {
+  outline: 3px solid rgba(56, 183, 167, .3);
+  outline-offset: 1px;
+}
+
 body .toast {
   border-radius: 13px;
   box-shadow: 0 16px 34px rgba(20, 42, 50, 0.18);
@@ -821,6 +860,15 @@ html[data-theme="dark"] body .auth-loading-card {
 html[data-theme="dark"] body .auth-card p,
 html[data-theme="dark"] body .auth-note {
   color: #9bb0b8;
+}
+
+html[data-theme="dark"] body .auth-card .password-toggle {
+  color: #a8c2c7;
+}
+
+html[data-theme="dark"] body .auth-card .password-toggle:hover {
+  background: #21434b;
+  color: #d8f4ee;
 }
 
 body .auth-card .auth-feedback {
