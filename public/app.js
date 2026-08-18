@@ -769,13 +769,15 @@ function renderDashboard() {
   const activeJobs = Number(jobsMeta.activeTotal ?? state.jobs.filter(job => job.enabled).length);
   const totalStorage = Number(storageMeta.total ?? state.storage.length);
   const success = Number(runsMeta.successTotal ?? state.runs.filter(run => run.status === 'success').length);
-  const failed = Number(runsMeta.failedTotal ?? state.runs.filter(run => run.status === 'failed').length);
+  const failedTotal = Number(runsMeta.failedTotal ?? state.runs.filter(run => run.status === 'failed').length);
+  const failed = Number(runsMeta.attentionTotal ?? failedTotal);
+  const resolvedFailures = Math.max(0, failedTotal - failed);
   const running = state.runs.filter(run => run.status === 'running').length;
   const activeSchedules = state.jobs.filter(job => job.enabled && job.nextRunAt).sort((a, b) => Date.parse(a.nextRunAt) - Date.parse(b.nextRunAt));
   const nextJob = activeSchedules[0];
   const latest = state.runs[0];
   const health = failed > 0 ? 'Attention' : success > 0 ? 'Healthy' : 'Awaiting data';
-  const healthDetail = failed > 0 ? `${failed} failed run${failed === 1 ? '' : 's'} need review` : success > 0 ? `${success} successful run${success === 1 ? '' : 's'} recorded` : 'Run a schedule to verify delivery';
+  const healthDetail = failed > 0 ? `${failed} failed run${failed === 1 ? '' : 's'} need review` : resolvedFailures > 0 ? `${resolvedFailures} earlier failure${resolvedFailures === 1 ? '' : 's'} resolved by a later successful backup` : success > 0 ? `${success} successful run${success === 1 ? '' : 's'} recorded` : 'Run a schedule to verify delivery';
   const headline = failed > 0 ? 'Backup attention required.' : !state.connections.length || !totalStorage || !totalJobs ? 'Complete your backup setup.' : !success ? 'Ready for your first backup.' : 'Backups are on track.';
   const subtitle = failed > 0 ? 'Review the latest failure, confirm the destination is reachable, and retry when the cause is resolved.' : 'Monitor schedule coverage, delivery readiness, and the latest recovery point from one place.';
 
@@ -813,6 +815,7 @@ function renderDashboard() {
   ];
   if (failed > 0) checks.unshift({ ready: false, title: 'Review failed backup runs', detail: `${failed} failed run${failed === 1 ? '' : 's'} may need a retry or destination fix.`, view: 'runs' });
   if (running > 0) checks.unshift({ ready: true, title: `${running} backup${running === 1 ? '' : 's'} running now`, detail: 'Live progress is available from the process indicator.', view: 'processes' });
+  if (failed === 0 && resolvedFailures > 0) checks.push({ ready: true, title: 'Earlier backup issues resolved', detail: `${resolvedFailures} failed run${resolvedFailures === 1 ? '' : 's'} remain in history, but a later backup completed successfully.`, view: 'runs' });
   $('#readiness').innerHTML = checks.slice(0, 4).map(check => `<button type="button" class="check-row ${check.ready ? 'is-ready' : 'is-attention'}" onclick="setView('${check.view}')"><span class="check-icon">${check.ready ? '✓' : '→'}</span><span><h4>${esc(check.title)}</h4><p>${esc(check.detail)}</p></span><span class="check-arrow">→</span></button>`).join('');
 }
 async function runJob(buttonOrId, id) { const targetId=id||buttonOrId; const button=id?buttonOrId:document.querySelector(`button[onclick="runJob('${targetId}')"]`); try { await withButtonBusy(button, async()=>{ await api(`/api/jobs/${encodeURIComponent(targetId)}/run`, { method: 'POST' }); await loadCollection('runs'); toast('Backup completed; history updated'); }, 'Starting backup…'); } catch (e) { await loadCollection('runs').catch(() => {}); toast(e.message, true); } }

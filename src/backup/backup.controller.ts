@@ -87,7 +87,7 @@ export class BackupController {
   processes(@Req() req: FastifyRequest) { this.auth.requireSession(req); return this.backups.liveProcesses(); }
   @Get('runs')
   @ApiOperation({ summary: 'List backup history with search and pagination.' })
-  @ApiExampleResponse(200, 'Paginated backup history.', { items: [{ id: 'run_01HXYZ123', jobId: 'job_01HXYZ123', jobName: 'Nightly production backup', status: 'success', startedAt: '2026-08-03T02:00:00.000Z', finishedAt: '2026-08-03T02:00:38.000Z', filename: 'production-backup-2026-08-03.sql.gz', sizeBytes: 345200000, verificationStatus: 'passed', databases: ['application_db'] }], total: 1, page: 1, pageSize: 25, pageCount: 1, successTotal: 1, failedTotal: 0 })
+  @ApiExampleResponse(200, 'Paginated backup history with unresolved failure count.', { items: [{ id: 'run_01HXYZ123', jobId: 'job_01HXYZ123', jobName: 'Nightly production backup', status: 'success', startedAt: '2026-08-03T02:00:00.000Z', finishedAt: '2026-08-03T02:00:38.000Z', filename: 'production-backup-2026-08-03.sql.gz', sizeBytes: 345200000, verificationStatus: 'passed', databases: ['application_db'] }], total: 1, page: 1, pageSize: 25, pageCount: 1, successTotal: 1, failedTotal: 2, attentionTotal: 0 })
   runs(@Req() req: FastifyRequest) { this.auth.requireSession(req); const query = (req as any).query || {}; return this.backups.runsPage(query); }
   @Post('runs/reconcile')
   @ApiOperation({ summary: 'Reconcile historical backup records with their storage files. Administrator only.' })
