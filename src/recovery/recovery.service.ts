@@ -12,26 +12,57 @@ export class RecoveryService {
 
   listPlans() {
     this.store.assertEncryptionHealthy();
-    const rows = this.store.db.prepare(`SELECT p.*,j.name as job_name,c.name as destination_name FROM recovery_plans p JOIN backup_jobs j ON j.id=p.job_id JOIN database_connections c ON c.id=p.destination_connection_id ORDER BY p.name`).all() as any[];
+    const rows = this.store.db.prepare(`SELECT p.*,j.name as job_name,c.name as destination_name,c.connection_purpose as destination_purpose FROM recovery_plans p JOIN backup_jobs j ON j.id=p.job_id JOIN database_connections c ON c.id=p.destination_connection_id ORDER BY p.name`).all() as any[];
     return rows.map(row => this.planView(row));
   }
 
   savePlan(input: any) {
     this.store.assertEncryptionHealthy();
-    if (!input.name || !input.jobId || !input.destinationConnectionId) throw new BadRequestException('Name, schedule, and destination connection are required');
+    const destinationConnectionId = String(input.recoveryConnectionId || input.destinationConnectionId || '').trim();
+    if (!input.name || !input.jobId || !destinationConnectionId) throw new BadRequestException('Name, schedule, and recovery destination are required');
     if (!this.store.db.prepare('SELECT id FROM backup_jobs WHERE id=?').get(input.jobId)) throw new BadRequestException('Backup schedule not found');
-    if (!this.store.db.prepare('SELECT id FROM database_connections WHERE id=?').get(input.destinationConnectionId)) throw new BadRequestException('Destination database connection not found');
+    const destination = this.store.db.prepare('SELECT id,connection_purpose as purpose FROM database_connections WHERE id=?').get(destinationConnectionId) as any;
+    if (!destination) throw new BadRequestException('Recovery destination database connection not found');
+    if (input.recoveryConnectionId && destination.purpose !== 'recovery') throw new BadRequestException('Select a dedicated recovery database connection');
     const cronExpression = String(input.cronExpression || '0 4 * * 0');
     const timezone = String(input.timezone || 'UTC');
     const next = nextCron(cronExpression, new Date(), timezone).toISOString();
     const prefix = safeFilePart(String(input.testDatabasePrefix || 'vaultback_recovery_test')).replace(/[^A-Za-z0-9_]/g, '_').slice(0, 40) || 'vaultback_recovery_test';
     const id = String(input.id || crypto.randomUUID());
-    this.store.db.prepare(`INSERT INTO recovery_plans (id,name,job_id,destination_connection_id,cron_expression,timezone,enabled,test_database_prefix,next_test_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,job_id=excluded.job_id,destination_connection_id=excluded.destination_connection_id,cron_expression=excluded.cron_expression,timezone=excluded.timezone,enabled=excluded.enabled,test_database_prefix=excluded.test_database_prefix,next_test_at=excluded.next_test_at`).run(id, String(input.name).trim(), input.jobId, input.destinationConnectionId, cronExpression, timezone, input.enabled === false ? 0 : 1, prefix, next, this.store.now());
-    return this.planView(this.store.db.prepare(`SELECT p.*,j.name as job_name,c.name as destination_name FROM recovery_plans p JOIN backup_jobs j ON j.id=p.job_id JOIN database_connections c ON c.id=p.destination_connection_id WHERE p.id=?`).get(id) as any);
+    this.store.db.prepare(`INSERT INTO recovery_plans (id,name,job_id,destination_connection_id,cron_expression,timezone,enabled,test_database_prefix,next_test_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,job_id=excluded.job_id,destination_connection_id=excluded.destination_connection_id,cron_expression=excluded.cron_expression,timezone=excluded.timezone,enabled=excluded.enabled,test_database_prefix=excluded.test_database_prefix,next_test_at=excluded.next_test_at`).run(id, String(input.name).trim(), input.jobId, destinationConnectionId, cronExpression, timezone, input.enabled === false ? 0 : 1, prefix, next, this.store.now());
+    return this.planView(this.store.db.prepare(`SELECT p.*,j.name as job_name,c.name as destination_name,c.connection_purpose as destination_purpose FROM recovery_plans p JOIN backup_jobs j ON j.id=p.job_id JOIN database_connections c ON c.id=p.destination_connection_id WHERE p.id=?`).get(id) as any);
   }
 
   deletePlan(id: string) {
     this.store.db.prepare('DELETE FROM recovery_plans WHERE id=?').run(id);
+    return { ok: true };
+  }
+
+  listRecoveryConnections() {
+    this.store.assertEncryptionHealthy();
+    return this.store.db.prepare("SELECT id,name,engine,host,port,username,ssl,created_at as createdAt FROM database_connections WHERE connection_purpose='recovery' ORDER BY name").all();
+  }
+
+  saveRecoveryConnection(input: any) {
+    this.store.assertEncryptionHealthy();
+    if (!input.name || !input.host || !input.username) throw new BadRequestException('Name, host, and username are required');
+    if (input.host === '0.0.0.0' || input.host === '::') throw new BadRequestException('Use the actual recovery database server address, not a bind address');
+    const id = String(input.id || crypto.randomUUID());
+    const old = this.store.db.prepare("SELECT password_enc,connection_purpose FROM database_connections WHERE id=?").get(id) as any;
+    if (old && old.connection_purpose !== 'recovery') throw new BadRequestException('That ID belongs to a normal backup connection');
+    const password = typeof input.password === 'string' && input.password.length ? this.store.encrypt(input.password) : old?.password_enc || this.store.encrypt('');
+    this.store.db.prepare(`INSERT INTO database_connections (id,name,engine,host,port,username,password_enc,database_name,database_scope,database_names,ssl,connection_purpose,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,engine=excluded.engine,host=excluded.host,port=excluded.port,username=excluded.username,password_enc=excluded.password_enc,ssl=excluded.ssl,connection_purpose='recovery'`).run(id, String(input.name).trim(), input.engine || 'mysql', String(input.host).trim(), Number(input.port || 3306), String(input.username).trim(), password, '', 'selected', '[]', input.ssl ? 1 : 0, 'recovery', this.store.now());
+    return this.listRecoveryConnections().find((item: any) => item.id === id);
+  }
+
+  async testRecoveryConnection(input: any) {
+    return this.backups.testConnection(input);
+  }
+
+  deleteRecoveryConnection(id: string) {
+    const used = this.store.db.prepare('SELECT id FROM recovery_plans WHERE destination_connection_id=? LIMIT 1').get(id);
+    if (used) throw new BadRequestException('This recovery server is used by a recovery plan. Delete or update the plan first.');
+    this.store.db.prepare("DELETE FROM database_connections WHERE id=? AND connection_purpose='recovery'").run(id);
     return { ok: true };
   }
 
@@ -97,7 +128,7 @@ export class RecoveryService {
   }
 
   async pitrStatus() {
-    const rows = this.store.db.prepare('SELECT id,name,engine,host FROM database_connections ORDER BY name').all() as any[];
+    const rows = this.store.db.prepare("SELECT id,name,engine,host FROM database_connections WHERE COALESCE(connection_purpose,'backup') <> 'recovery' ORDER BY name").all() as any[];
     const items = [];
     for (const row of rows) {
       try { const source = this.store.db.prepare('SELECT storage_target_id as storageTargetId,last_capture_at as lastCaptureAt,message FROM pitr_sources WHERE connection_id=?').get(row.id) as any; const artifactCount = Number((this.store.db.prepare("SELECT COUNT(*) as count FROM pitr_artifacts WHERE connection_id=? AND status='captured'").get(row.id) as any)?.count || 0); items.push({ connectionId: row.id, name: row.name, engine: row.engine, storageTargetId: source?.storageTargetId || null, lastCaptureAt: source?.lastCaptureAt || null, artifactCount, ...(await this.backups.inspectPitr(row.id)) }); }
@@ -110,7 +141,7 @@ export class RecoveryService {
   runbooks() {
     return [
       { id: 'failed-backup', title: 'A backup failed', steps: ['Open Backup history and read the failed process log.', 'Test the database connection and storage target.', 'Run the schedule manually and confirm the artifact is downloadable.', 'Create a restore test after the next successful run.'] },
-      { id: 'restore', title: 'Restore a database safely', steps: ['Choose a verified backup and destination connection.', 'Use Restore as a new database name for a rehearsal.', 'Verify application tables and row counts.', 'Only use overwrite after confirming a separate recovery point.'] },
+      { id: 'restore', title: 'Restore a database safely', steps: ['Choose a verified backup and a dedicated recovery server.', 'Use Restore as a new database name for a rehearsal.', 'Verify application tables and row counts.', 'Only use overwrite after confirming a separate recovery point.'] },
       { id: 'ransomware', title: 'Suspected destructive event', steps: ['Stop scheduled writes if necessary and preserve logs.', 'Revoke delete-capable storage credentials.', 'Use an isolated destination for the first restore.', 'Record the selected recovery point and verification evidence.'] }
     ];
   }
@@ -138,6 +169,6 @@ export class RecoveryService {
   private json(value: unknown) { try { return JSON.parse(String(value || '{}')); } catch { return {}; } }
   private planView(row: any) {
     const latest = this.store.db.prepare('SELECT * FROM recovery_tests WHERE plan_id=? ORDER BY started_at DESC LIMIT 1').get(row.id) as any;
-    return { id: row.id, name: row.name, jobId: row.job_id, jobName: row.job_name, destinationConnectionId: row.destination_connection_id, destinationName: row.destination_name, cronExpression: row.cron_expression, timezone: row.timezone, enabled: Boolean(row.enabled), testDatabasePrefix: row.test_database_prefix, lastTestAt: row.last_test_at, nextTestAt: row.next_test_at, lastStatus: row.last_status, lastMessage: row.last_message, latestTest: latest ? { id: latest.id, status: latest.status, startedAt: latest.started_at, finishedAt: latest.finished_at, rpoSeconds: latest.rpo_seconds, rtoSeconds: latest.rto_seconds, errorMessage: latest.error_message } : null };
+    return { id: row.id, name: row.name, jobId: row.job_id, jobName: row.job_name, destinationConnectionId: row.destination_connection_id, recoveryConnectionId: row.destination_purpose === 'recovery' ? row.destination_connection_id : null, destinationName: row.destination_name, destinationPurpose: row.destination_purpose || 'backup', cronExpression: row.cron_expression, timezone: row.timezone, enabled: Boolean(row.enabled), testDatabasePrefix: row.test_database_prefix, lastTestAt: row.last_test_at, nextTestAt: row.next_test_at, lastStatus: row.last_status, lastMessage: row.last_message, latestTest: latest ? { id: latest.id, status: latest.status, startedAt: latest.started_at, finishedAt: latest.finished_at, rpoSeconds: latest.rpo_seconds, rtoSeconds: latest.rto_seconds, errorMessage: latest.error_message } : null };
   }
 }

@@ -85,7 +85,7 @@ export class BackupService implements OnApplicationShutdown {
   }
 
   listConnectionsPage(input: any = {}) {
-    const { page, pageSize, offset, search } = this.pageOptions(input); const where = search ? `WHERE LOWER(COALESCE(name,'') || ' ' || COALESCE(engine,'') || ' ' || COALESCE(host,'') || ' ' || COALESCE(username,'') || ' ' || COALESCE(database_name,'')) LIKE ?` : ''; const params = search ? [`%${search}%`] : []; const total = Number((this.store.db.prepare(`SELECT COUNT(*) as count FROM database_connections ${where}`).get(...params) as any)?.count || 0); const rows = this.store.db.prepare(`SELECT id, name, engine, host, port, username, database_name as database, database_scope as databaseScope, database_names as databaseNames, ssl, created_at as createdAt FROM database_connections ${where} ORDER BY name LIMIT ? OFFSET ?`).all(...params, pageSize, offset) as any[]; const items = rows.map(row => { const databaseScope = row.databaseScope === 'all' ? 'all' : 'selected'; let databases: string[] = []; try { databases = JSON.parse(String(row.databaseNames || '[]')); } catch {} if (databaseScope === 'selected' && !databases.length && row.database) databases = String(row.database).split(',').map(value => value.trim()).filter(Boolean); return { ...row, database: databaseScope === 'all' ? '*' : databases.join(', '), databaseScope, databases }; }); return this.pageResult(items, total, page, pageSize);
+    const { page, pageSize, offset, search } = this.pageOptions(input); const where = search ? `WHERE COALESCE(connection_purpose,'backup') <> 'recovery' AND LOWER(COALESCE(name,'') || ' ' || COALESCE(engine,'') || ' ' || COALESCE(host,'') || ' ' || COALESCE(username,'') || ' ' || COALESCE(database_name,'')) LIKE ?` : `WHERE COALESCE(connection_purpose,'backup') <> 'recovery'`; const params = search ? [`%${search}%`] : []; const total = Number((this.store.db.prepare(`SELECT COUNT(*) as count FROM database_connections ${where}`).get(...params) as any)?.count || 0); const rows = this.store.db.prepare(`SELECT id, name, engine, host, port, username, database_name as database, database_scope as databaseScope, database_names as databaseNames, ssl, created_at as createdAt FROM database_connections ${where} ORDER BY name LIMIT ? OFFSET ?`).all(...params, pageSize, offset) as any[]; const items = rows.map(row => { const databaseScope = row.databaseScope === 'all' ? 'all' : 'selected'; let databases: string[] = []; try { databases = JSON.parse(String(row.databaseNames || '[]')); } catch {} if (databaseScope === 'selected' && !databases.length && row.database) databases = String(row.database).split(',').map(value => value.trim()).filter(Boolean); return { ...row, database: databaseScope === 'all' ? '*' : databases.join(', '), databaseScope, databases }; }); return this.pageResult(items, total, page, pageSize);
   }
 
   listJobsPage(input: any = {}) {
@@ -146,7 +146,7 @@ export class BackupService implements OnApplicationShutdown {
   }
 
   listConnections() {
-    const rows = this.store.db.prepare('SELECT id, name, engine, host, port, username, database_name as database, database_scope as databaseScope, database_names as databaseNames, ssl, created_at as createdAt FROM database_connections ORDER BY name').all() as any[];
+    const rows = this.store.db.prepare("SELECT id, name, engine, host, port, username, database_name as database, database_scope as databaseScope, database_names as databaseNames, ssl, created_at as createdAt FROM database_connections WHERE COALESCE(connection_purpose,'backup') <> 'recovery' ORDER BY name").all() as any[];
     return rows.map(row => {
       const databaseScope = row.databaseScope === 'all' ? 'all' : 'selected';
       let databases: string[] = [];
@@ -177,11 +177,11 @@ export class BackupService implements OnApplicationShutdown {
   }
   saveConnection(body: any) {
     if (!body.name || !body.host || !body.username) throw new BadRequestException('Name, host and username are required');
-    const id = body.id || crypto.randomUUID(); const old = this.store.db.prepare('SELECT password_enc,database_name FROM database_connections WHERE id = ?').get(id) as any;
+    const id = body.id || crypto.randomUUID(); const old = this.store.db.prepare('SELECT password_enc,database_name,connection_purpose FROM database_connections WHERE id = ?').get(id) as any; if (old?.connection_purpose === 'recovery') throw new BadRequestException('Dedicated recovery connections must be managed in Recovery Assurance');
     const hasNewPassword = typeof body.password === 'string' && body.password.length > 0;
     const passwordEnc = hasNewPassword ? this.store.encrypt(body.password) : (old?.password_enc || this.store.encrypt(''));
     const legacyDatabase = body.database || old?.database_name || '';
-    this.store.db.prepare(`INSERT INTO database_connections (id,name,engine,host,port,username,password_enc,database_name,database_scope,database_names,ssl,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,engine=excluded.engine,host=excluded.host,port=excluded.port,username=excluded.username,password_enc=excluded.password_enc,database_name=excluded.database_name,ssl=excluded.ssl`).run(id, body.name, body.engine || 'mysql', body.host, Number(body.port || 3306), body.username, passwordEnc, legacyDatabase, 'selected', '[]', body.ssl ? 1 : 0, this.store.now());
+    this.store.db.prepare(`INSERT INTO database_connections (id,name,engine,host,port,username,password_enc,database_name,database_scope,database_names,ssl,connection_purpose,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,engine=excluded.engine,host=excluded.host,port=excluded.port,username=excluded.username,password_enc=excluded.password_enc,database_name=excluded.database_name,ssl=excluded.ssl,connection_purpose='backup'`).run(id, body.name, body.engine || 'mysql', body.host, Number(body.port || 3306), body.username, passwordEnc, legacyDatabase, 'selected', '[]', body.ssl ? 1 : 0, 'backup', this.store.now());
     return this.listConnections().find(x => x.id === id);
   }
   async testConnection(body: any) {
@@ -199,8 +199,10 @@ export class BackupService implements OnApplicationShutdown {
       return { ok: false, message: this.nativeClientMessage(error) };
     }
   }
-  deleteConnection(id: string) { this.store.db.prepare('DELETE FROM database_connections WHERE id = ?').run(id); return { ok: true }; }
+  deleteConnection(id: string) { this.store.db.prepare("DELETE FROM database_connections WHERE id = ? AND COALESCE(connection_purpose,'backup') <> 'recovery'").run(id); return { ok: true }; }
   async listAvailableDatabases(id: string) {
+    const purpose = this.store.db.prepare("SELECT connection_purpose FROM database_connections WHERE id=?").get(id) as any;
+    if (purpose?.connection_purpose === 'recovery') throw new BadRequestException('Dedicated recovery connections are not available for backup database discovery');
     const connection = this.getConnection(id);
     try {
       const [rows] = await this.withNativeDatabaseConnection<any>(connection, client => client.query('SHOW DATABASES'));
@@ -241,7 +243,7 @@ export class BackupService implements OnApplicationShutdown {
     const connectionIds = [...new Set((Array.isArray(body.connectionIds) ? body.connectionIds : [body.databaseConnectionId]).map((value: unknown) => String(value || '').trim()).filter(Boolean))];
     const storageTargetIds = [...new Set((Array.isArray(body.storageTargetIds) ? body.storageTargetIds : [body.storageTargetId]).map((value: unknown) => String(value || '').trim()).filter(Boolean))];
     if (!connectionIds.length || !storageTargetIds.length) throw new BadRequestException('Select at least one database connection and storage target');
-    for (const id of connectionIds) if (!this.store.db.prepare('SELECT id FROM database_connections WHERE id=?').get(id)) throw new BadRequestException('One selected database connection no longer exists');
+    for (const id of connectionIds) if (!this.store.db.prepare("SELECT id FROM database_connections WHERE id=? AND COALESCE(connection_purpose,'backup') <> 'recovery'").get(id)) throw new BadRequestException('One selected database connection no longer exists');
     for (const id of storageTargetIds) if (!this.store.db.prepare('SELECT id FROM storage_targets WHERE id=?').get(id)) throw new BadRequestException('One selected storage target no longer exists');
     const databaseScope = body.databaseScope === 'all' ? 'all' : 'selected';
     const rawSelections = Array.isArray(body.databaseSelections) ? body.databaseSelections : [];

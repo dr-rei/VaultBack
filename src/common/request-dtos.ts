@@ -39,6 +39,25 @@ export class DatabaseConnectionDto {
   @IsOptional() @IsBoolean() ssl?: boolean;
 }
 
+export class RecoveryConnectionDto {
+  @ApiPropertyOptional({ description: 'Existing dedicated recovery connection ID. Omit when creating a server.', example: 'recovery_conn_01HXYZ123' })
+  @IsOptional() @IsString() @MaxLength(128) id?: string;
+  @ApiProperty({ description: 'Friendly name shown in Recovery Assurance.', example: 'Disaster recovery MySQL' })
+  @IsString() @IsNotEmpty() @MaxLength(128) name!: string;
+  @ApiPropertyOptional({ description: 'Database client engine.', enum: ['mysql', 'mariadb'], example: 'mysql', default: 'mysql' })
+  @IsOptional() @IsIn(['mysql', 'mariadb']) engine?: 'mysql' | 'mariadb';
+  @ApiProperty({ description: 'Dedicated recovery database server hostname or IP address.', example: '10.0.20.15' })
+  @IsString() @IsNotEmpty() @MaxLength(255) host!: string;
+  @ApiPropertyOptional({ description: 'Database server TCP port.', example: 3306, default: 3306, minimum: 1, maximum: 65535 })
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(65535) port?: number;
+  @ApiProperty({ description: 'Database account username used only for restore tests.', example: 'vaultback_restore' })
+  @IsString() @IsNotEmpty() @MaxLength(128) username!: string;
+  @ApiPropertyOptional({ description: 'Database account password. Omit on edit to keep the encrypted password.', example: 'restore-password', format: 'password' })
+  @IsOptional() @IsString() @MaxLength(512) password?: string;
+  @ApiPropertyOptional({ description: 'Enable TLS for the recovery connection.', example: true, default: false })
+  @IsOptional() @IsBoolean() ssl?: boolean;
+}
+
 export class StorageTargetDto {
   @ApiPropertyOptional({ description: 'Existing storage target ID. Omit when creating a target.', example: 'storage_01HXYZ123' })
   @IsOptional() @IsString() @MaxLength(128) id?: string;
@@ -188,8 +207,10 @@ export class RecoveryPlanDto {
   @IsString() @IsNotEmpty() @MaxLength(128) name!: string;
   @ApiProperty({ description: 'Schedule whose latest successful artifact will be tested.', example: 'job_01HXYZ123' })
   @IsString() @IsNotEmpty() @MaxLength(128) jobId!: string;
-  @ApiProperty({ description: 'Database connection used only as the isolated restore destination.', example: 'conn_01HXYZ456' })
-  @IsString() @IsNotEmpty() @MaxLength(128) destinationConnectionId!: string;
+  @ApiPropertyOptional({ description: 'Legacy database connection used as the isolated restore destination. Prefer recoveryConnectionId for a dedicated server.', example: 'conn_01HXYZ456' })
+  @IsOptional() @IsString() @MaxLength(128) destinationConnectionId?: string;
+  @ApiPropertyOptional({ description: 'Dedicated recovery database server configured in Recovery Assurance.', example: 'recovery_conn_01HXYZ456' })
+  @IsOptional() @IsString() @MaxLength(128) recoveryConnectionId?: string;
   @ApiPropertyOptional({ description: 'Five-field cron expression for the restore test.', example: '0 4 * * 0', default: '0 4 * * 0' })
   @IsOptional() @IsString() @MaxLength(128) cronExpression?: string;
   @ApiPropertyOptional({ description: 'IANA timezone for the restore-test schedule.', example: 'Asia/Jakarta', default: 'UTC' })

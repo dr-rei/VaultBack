@@ -124,7 +124,7 @@ export class SystemService {
 
   setupStatus() {
     const counts = {
-      connections: Number((this.store.db.prepare('SELECT COUNT(*) as count FROM database_connections').get() as any)?.count || 0),
+      connections: Number((this.store.db.prepare("SELECT COUNT(*) as count FROM database_connections WHERE COALESCE(connection_purpose,'backup') <> 'recovery'").get() as any)?.count || 0),
       storage: Number((this.store.db.prepare('SELECT COUNT(*) as count FROM storage_targets').get() as any)?.count || 0),
       schedules: Number((this.store.db.prepare('SELECT COUNT(*) as count FROM backup_jobs').get() as any)?.count || 0)
     };

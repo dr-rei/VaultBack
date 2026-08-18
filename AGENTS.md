@@ -4,7 +4,7 @@
 
 VaultBack is a self-hosted database backup manager published at `https://github.com/dr-rei/VaultBack`. The application is a NestJS/Fastify backend and a vanilla JavaScript frontend served by the same Node.js process. It stores application state in SQLite under `DATA_DIR`, encrypts database and storage credentials at rest, and uses portable MariaDB-compatible client tools stored inside the application directory.
 
-The latest published release is `v0.1.39`. Do not create or publish a new release unless the user explicitly requests it.
+The latest published release is `v0.2.0`. Do not create or publish a new release unless the user explicitly requests it.
 
 ## Repository Structure
 
