@@ -118,6 +118,26 @@ export class BackupService implements OnApplicationShutdown {
     return { ok: true, checked, expired, available: checked - expired - errors, errors, errorItems, completedAt: this.store.now() };
   }
 
+  backupActivity(input: any = {}) {
+    const requestedDays = Number.parseInt(String(input.days || '182'), 10) || 182;
+    const days = Math.min(366, Math.max(28, requestedDays));
+    const end = new Date();
+    const endUtc = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
+    const startUtc = new Date(endUtc);
+    startUtc.setUTCDate(startUtc.getUTCDate() - (days - 1));
+    const from = startUtc.toISOString().slice(0, 10);
+    const to = endUtc.toISOString().slice(0, 10);
+    const rows = this.store.db.prepare(`SELECT substr(COALESCE(finished_at,started_at),1,10) as date,SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as successCount,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failedCount,SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) as runningCount,COUNT(*) as totalCount FROM backup_runs WHERE substr(COALESCE(finished_at,started_at),1,10) BETWEEN ? AND ? GROUP BY substr(COALESCE(finished_at,started_at),1,10) ORDER BY date`).all(from, to) as any[];
+    const byDate = new Map(rows.map(row => [String(row.date), row]));
+    const calendar: Array<{ date: string; success: number; failed: number; running: number; total: number }> = [];
+    for (let cursor = new Date(startUtc); cursor <= endUtc; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+      const date = cursor.toISOString().slice(0, 10);
+      const row = byDate.get(date) || {};
+      calendar.push({ date, success: Number(row.successCount || 0), failed: Number(row.failedCount || 0), running: Number(row.runningCount || 0), total: Number(row.totalCount || 0) });
+    }
+    return { from, to, days: calendar, successTotal: calendar.reduce((sum, day) => sum + day.success, 0), failedTotal: calendar.reduce((sum, day) => sum + day.failed, 0), runningTotal: calendar.reduce((sum, day) => sum + day.running, 0) };
+  }
+
   liveProcesses() {
     const expiry = Date.now() - 15 * 60 * 1000;
     for (const [id, process] of this.liveProcessState) if (process.status !== 'running' && Date.parse(process.updatedAt) < expiry) this.liveProcessState.delete(id);

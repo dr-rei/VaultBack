@@ -1,4 +1,4 @@
-const state = { csrf: '', userId: '', isPrimary: false, version: '', connections: [], storage: [], storageHealth: [], jobs: [], runs: [], processes: [], sessions: [], sessionInfo: null, audit: { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }, currentView: 'dashboard', dependencies: null, toolDiagnostics: null, toolDiagnosticsLoadedAt: 0, encryption: null, role: 'viewer', capacity: [], setupStatus: null, notifications: null, environment: null, update: null, users: [], list: { connections: { page: 1, pageSize: 25, search: '' }, storage: { page: 1, pageSize: 25, search: '' }, jobs: { page: 1, pageSize: 25, search: '' }, runs: { page: 1, pageSize: 25, search: '', status: '' }, users: { page: 1, pageSize: 25, search: '' }, sessions: { page: 1, pageSize: 25 } }, meta: {} };
+const state = { csrf: '', userId: '', isPrimary: false, version: '', connections: [], storage: [], storageHealth: [], jobs: [], runs: [], backupActivity: null, processes: [], sessions: [], sessionInfo: null, audit: { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }, currentView: 'dashboard', dependencies: null, toolDiagnostics: null, toolDiagnosticsLoadedAt: 0, encryption: null, role: 'viewer', capacity: [], setupStatus: null, notifications: null, environment: null, update: null, users: [], list: { connections: { page: 1, pageSize: 25, search: '' }, storage: { page: 1, pageSize: 25, search: '' }, jobs: { page: 1, pageSize: 25, search: '' }, runs: { page: 1, pageSize: 25, search: '', status: '' }, users: { page: 1, pageSize: 25, search: '' }, sessions: { page: 1, pageSize: 25 } }, meta: {} };
 let liveProcessTimer = null;
 var updateCheckTimer = null;
 var updateCheckInFlight = false;
@@ -287,7 +287,7 @@ function connectRealtime() {
   });
   source.addEventListener('backup_runs', () => {
     if (!['dashboard', 'jobs', 'runs'].includes(state.currentView)) return;
-    void loadCollection('runs').then(() => { renderRuns(); renderDashboard(); });
+    void Promise.all([loadCollection('runs'), loadBackupActivity()]).then(() => { renderRuns(); renderDashboard(); });
   });
   source.addEventListener('downloads', event => {
     const payload = realtimeJson(event);
@@ -761,6 +761,43 @@ function overviewStatusLabel(status) {
   return status === 'success' ? 'Successful' : status === 'failed' ? 'Failed' : status === 'running' ? 'Running' : String(status || 'Unknown');
 }
 
+async function loadBackupActivity() {
+  try { state.backupActivity = await api('/api/runs/activity?days=182'); } catch { state.backupActivity = null; }
+  renderBackupActivity();
+}
+
+function backupActivityDateLabel(value) {
+  const date = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) ? date.toLocaleDateString([], { dateStyle: 'long', timeZone: 'UTC' }) : value;
+}
+
+function renderBackupActivity() {
+  const root = $('#overview-backup-activity');
+  const data = state.backupActivity;
+  if (!root) return;
+  if (!data?.days?.length) { root.innerHTML = '<div class="overview-empty"><b>No backup activity yet</b><span>Successful backup days will appear here after the first run.</span></div>'; return; }
+  const first = new Date(`${data.days[0].date}T00:00:00Z`);
+  const leading = Number.isFinite(first.getTime()) ? first.getUTCDay() : 0;
+  const cells = [...Array(leading).fill(null), ...data.days];
+  while (cells.length % 7) cells.push(null);
+  const cellMarkup = cells.map(day => {
+    if (!day) return '<span class="backup-activity-cell is-padding" aria-hidden="true"></span>';
+    const success = Number(day.success || 0); const failed = Number(day.failed || 0); const running = Number(day.running || 0);
+    const total = Number(day.total || success + failed + running);
+    const completed = success + failed;
+    const completedRate = completed > 0 ? success / completed : 0;
+    const status = total === 0 ? 'is-empty' : completed === 0 && running > 0 ? 'is-running' : completedRate > 0.5 ? 'is-success' : 'is-failed';
+    const intensity = status === 'is-success' ? (completedRate - 0.5) / 0.5 : status === 'is-failed' ? (0.5 - completedRate) / 0.5 : 1;
+    const opacity = Math.max(0.24, Math.min(1, intensity));
+    const style = status === 'is-success' || status === 'is-failed' ? ` style="--backup-activity-opacity:${opacity.toFixed(2)}"` : '';
+    const rateLabel = total > 0 ? `${Math.round(completedRate * 100)}% completed success rate` : 'No backup actions';
+    const label = `${backupActivityDateLabel(day.date)}: ${rateLabel}; ${success} successful, ${failed} failed${running ? `, ${running} running` : ''}`;
+    return `<button type="button" class="backup-activity-cell ${status}"${style} title="${esc(label)}" aria-label="${esc(label)}" onclick="setView('runs')"></button>`;
+  }).join('');
+  const successTotal = Number(data.successTotal || 0); const failedTotal = Number(data.failedTotal || 0);
+  root.innerHTML = `<div class="backup-activity-summary"><span><b>${successTotal}</b> successful backup${successTotal === 1 ? '' : 's'}</span><span><b>${failedTotal}</b> failed${failedTotal === 1 ? '' : ' runs'}</span><span class="backup-activity-legend"><i class="is-success"></i>Success <i class="is-failed"></i>Failed <i class="is-empty"></i>No run</span></div><div class="backup-activity-calendar"><div class="backup-activity-weekdays" aria-hidden="true"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div><div class="backup-activity-grid" role="grid" aria-label="Backup activity for the last 26 weeks">${cellMarkup}</div></div><p class="backup-activity-note">${esc(data.from)} to ${esc(data.to)} · Select a day to open backup history.</p>`;
+}
+
 function renderDashboard() {
   const jobsMeta = state.meta.jobs || {};
   const storageMeta = state.meta.storage || {};
@@ -1206,7 +1243,7 @@ function syncUpdateCheckPolling() {
 }
 
 async function loadAll() {
-  await Promise.all(['connections', 'storage', 'jobs', 'runs'].map(loadCollection));
+  await Promise.all(['connections', 'storage', 'jobs', 'runs'].map(loadCollection).concat(loadBackupActivity()));
   try { state.storageHealth = await api('/api/storage/health'); } catch { state.storageHealth = []; }
   if (state.role === 'admin') await loadCollection('users'); else state.users = [];
   updateRoleUi();
