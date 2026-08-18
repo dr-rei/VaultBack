@@ -91,8 +91,8 @@ export class StorageService {
     }
   }
 
-  async rotate(target: StorageTarget, prefix: string, retentionCount: number, folder = '') {
-    if (retentionCount < 1) return 0;
+  async rotate(target: StorageTarget, prefix: string, retentionCount: number, folder = ''): Promise<string[]> {
+    if (retentionCount < 1) return [];
     this.validateFolder(folder);
     if (target.type === 'local') {
       const dir = path.resolve(this.localDir(target), folder);
@@ -100,15 +100,15 @@ export class StorageService {
       try {
         entries = fs.readdirSync(dir, { withFileTypes: true });
       } catch (error: any) {
-        if (error?.code === 'ENOENT') return 0;
+        if (error?.code === 'ENOENT') return [];
         throw error;
       }
       const files = entries.filter(entry => entry.isFile() && entry.name.startsWith(prefix)).map(entry => entry.name).sort().reverse();
-      let removed = 0;
+      const removed: string[] = [];
       for (const file of files.slice(retentionCount)) {
         try {
           fs.rmSync(path.join(dir, file), { force: true });
-          removed++;
+          removed.push(file);
         } catch (error: any) {
           if (error?.code !== 'ENOENT') throw error;
         }
@@ -119,7 +119,7 @@ export class StorageService {
     if (target.type === 'webdav') return this.rotateWebdav(target, prefix, retentionCount, folder);
     if (target.type === 'google-drive') return this.rotateGoogleDrive(target, prefix, retentionCount, folder);
     if (target.type === 'onedrive') return this.rotateOneDrive(target, prefix, retentionCount, folder);
-    return 0;
+    return [];
   }
 
   async test(target: StorageTarget) {
@@ -175,11 +175,11 @@ export class StorageService {
     try {
       await client.access(this.ftpConfig(target));
       let entries: any[];
-      try { entries = await client.list(this.ftpRemoteDirectory(target, folder)); } catch (error) { if (this.isMissingRemote(error)) return 0; throw error; }
+      try { entries = await client.list(this.ftpRemoteDirectory(target, folder)); } catch (error) { if (this.isMissingRemote(error)) return []; throw error; }
       const files = this.rotationFiles(entries.filter(entry => entry.type === 1), prefix);
-      let removed = 0;
+      const removed: string[] = [];
       for (const file of files.slice(retentionCount)) {
-        try { await client.remove(this.ftpRemotePath(target, file.name, folder)); removed++; } catch (error) { if (!this.isMissingRemote(error)) throw error; }
+        try { await client.remove(this.ftpRemotePath(target, file.name, folder)); removed.push(file.name); } catch (error) { if (!this.isMissingRemote(error)) throw error; }
       }
       return removed;
     } finally { client.close(); }
@@ -201,17 +201,17 @@ export class StorageService {
   private async rotateWebdav(target: StorageTarget, prefix: string, retentionCount: number, folder: string) {
     const base = String((target.config as any).url).replace(/\/$/, '');
     let response: { status: number; body?: Buffer };
-    try { response = await this.webdavRequest(target, this.webdavPath(base, folder), { method: 'PROPFIND', headers: { ...this.webdavHeaders(target), Depth: '1' } }); } catch (error) { if (this.isMissingRemote(error)) return 0; throw error; }
-    if ([404, 410].includes(response.status)) return 0;
+    try { response = await this.webdavRequest(target, this.webdavPath(base, folder), { method: 'PROPFIND', headers: { ...this.webdavHeaders(target), Depth: '1' } }); } catch (error) { if (this.isMissingRemote(error)) return []; throw error; }
+    if ([404, 410].includes(response.status)) return [];
     if (response.status < 200 || response.status >= 300) throw new BadRequestException(`WebDAV rotation listing returned ${response.status}`);
     const files = this.rotationFiles(this.webdavRotationFiles(response.body || Buffer.alloc(0), base), prefix);
-    let removed = 0;
+    const removed: string[] = [];
     for (const file of files.slice(retentionCount)) {
       let deletion: { status: number };
       try { deletion = await this.webdavRequest(target, this.webdavPath(base, folder, file.name), { method: 'DELETE', headers: this.webdavHeaders(target) }); } catch (error) { if (!this.isMissingRemote(error)) throw error; continue; }
       if ([404, 410].includes(deletion.status)) continue;
       if (deletion.status < 200 || deletion.status >= 300) throw new BadRequestException(`WebDAV could not delete an old backup (${deletion.status})`);
-      removed++;
+      removed.push(file.name);
     }
     return removed;
   }
@@ -229,12 +229,12 @@ export class StorageService {
       files.push(...(Array.isArray(result.files) ? result.files.filter((file: any) => file?.id && file?.name).map((file: any) => ({ id: String(file.id), name: String(file.name) })) : []));
       pageToken = String(result.nextPageToken || '');
     } while (pageToken);
-    let removed = 0;
+    const removed: string[] = [];
     for (const file of this.rotationFiles(files, prefix).slice(retentionCount)) {
       const response = await this.googleDriveFetch(target, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}`, { method: 'DELETE' });
       if ([404, 410].includes(response.status)) continue;
       if (!response.ok) throw new Error(`Google Drive could not delete an old backup (${response.status})`);
-      removed++;
+      removed.push(file.name);
     }
     return removed;
   }
@@ -245,18 +245,18 @@ export class StorageService {
     const files: Array<{ id: string; name: string }> = [];
     while (endpoint) {
       const response = await this.oneDriveFetch(target, endpoint);
-      if ([404, 410].includes(response.status)) return 0;
+      if ([404, 410].includes(response.status)) return [];
       if (!response.ok) throw new Error(`OneDrive rotation listing returned ${response.status}`);
       const result = await response.json() as any;
       files.push(...(Array.isArray(result.value) ? result.value.filter((file: any) => file?.id && file?.name && file?.file).map((file: any) => ({ id: String(file.id), name: String(file.name) })) : []));
       endpoint = String(result['@odata.nextLink'] || '');
     }
-    let removed = 0;
+    const removed: string[] = [];
     for (const file of this.rotationFiles(files, prefix).slice(retentionCount)) {
       const response = await this.oneDriveFetch(target, `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(file.id)}`, { method: 'DELETE' });
       if ([404, 410].includes(response.status)) continue;
       if (!response.ok) throw new Error(`OneDrive could not delete an old backup (${response.status})`);
-      removed++;
+      removed.push(file.name);
     }
     return removed;
   }

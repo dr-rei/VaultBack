@@ -1282,15 +1282,49 @@ function ensureAuditPanel() {
   const panel = document.createElement('div');
   panel.id = 'audit-panel';
   panel.className = 'panel admin-only-setting';
-  panel.innerHTML = '<div class="panel-head"><div><span class="kicker">ACCOUNTABILITY</span><h3>Audit log</h3></div></div><p class="hint">Administrative actions are recorded here without storing passwords or access tokens.</p><div id="audit-list" class="audit-list"><div class="empty">Loading audit events…</div></div><div id="audit-pagination"></div>';
+  panel.innerHTML = '<div class="panel-head audit-panel-head"><div><span class="kicker">ACCOUNTABILITY</span><h3>Audit log</h3></div><span id="audit-count-badge" class="tag">Loading</span></div><p class="hint">A chronological record of administrative actions. Passwords, tokens, and encrypted secret values are never stored here.</p><div class="audit-summary"><div class="audit-summary-item"><span>Events recorded</span><strong id="audit-total">—</strong></div><div class="audit-summary-item"><span>Visible on this page</span><strong id="audit-visible">—</strong></div><div class="audit-summary-item audit-summary-note"><span>Retention</span><strong>Latest events</strong></div></div><div id="audit-list" class="audit-list" role="list" aria-live="polite"><div class="empty">Loading audit events…</div></div><div id="audit-pagination"></div>';
   settingsView.appendChild(panel);
+}
+
+function auditTone(action) {
+  const value = String(action || '').toLowerCase();
+  if (/fail|denied|delete|revoke|logout/.test(value)) return 'danger';
+  if (/login|setup|create|update|save|export|import/.test(value)) return 'positive';
+  return 'neutral';
+}
+
+function auditMetadataMarkup(metadata) {
+  const entries = metadata && typeof metadata === 'object' ? Object.entries(metadata) : [];
+  if (!entries.length) return '<span class="audit-no-details">No additional details</span>';
+  const visible = entries.slice(0, 6).map(([key, value]) => {
+    let display = '';
+    try { display = typeof value === 'string' ? value : JSON.stringify(value); } catch { display = String(value); }
+    display = String(display ?? '—');
+    return `<div><dt>${esc(key)}</dt><dd title="${esc(display)}">${esc(display)}</dd></div>`;
+  }).join('');
+  const remaining = entries.length > 6 ? `<span class="audit-more-details">+${entries.length - 6} more field${entries.length - 6 === 1 ? '' : 's'}</span>` : '';
+  return `<dl class="audit-details">${visible}</dl>${remaining}`;
+}
+
+function auditEventMarkup(item) {
+  const tone = auditTone(item.action);
+  const glyph = tone === 'danger' ? '!' : tone === 'positive' ? '✓' : '•';
+  const actor = item.username || 'system';
+  const timestamp = item.createdAt || '';
+  return `<article class="audit-row ${tone}" role="listitem"><div class="audit-event-marker" aria-hidden="true">${glyph}</div><div class="audit-row-body"><div class="audit-row-header"><div class="audit-action-wrap"><b>${esc(item.action || 'Administrative event')}</b><span class="audit-kind">Administrative activity</span></div><time datetime="${esc(timestamp)}">${esc(fmtDate(timestamp))}</time></div><div class="audit-actor"><span>Actor</span><b>${esc(actor)}</b></div><div class="audit-metadata">${auditMetadataMarkup(item.metadata || {})}</div></div></article>`;
 }
 
 async function loadAudit() {
   try { state.audit = await api(`/api/settings/audit?page=${state.audit.page}&pageSize=${state.audit.pageSize}`); } catch { state.audit = { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }; }
   const list = $('#audit-list');
   if (!list) return;
-  list.innerHTML = state.audit.items.map(item => `<div class="audit-row"><div><b>${esc(item.action)}</b><small>${esc(item.username || 'system')} · ${fmtDate(item.createdAt)}</small></div><code>${esc(JSON.stringify(item.metadata || {}))}</code></div>`).join('') || '<div class="empty">No audit events yet.</div>';
+  const total = Number(state.audit.total || 0);
+  const visible = state.audit.items.length;
+  $('#audit-total')?.replaceChildren(document.createTextNode(String(total)));
+  $('#audit-visible')?.replaceChildren(document.createTextNode(String(visible)));
+  const badge = $('#audit-count-badge');
+  if (badge) badge.textContent = `${total} event${total === 1 ? '' : 's'}`;
+  list.innerHTML = state.audit.items.map(auditEventMarkup).join('') || '<div class="empty audit-empty">No audit events yet.</div>';
   const pagination = $('#audit-pagination');
   if (pagination) pagination.innerHTML = `<div class="pagination"><span>${state.audit.total} total</span><div><button class="small-button" ${state.audit.page <= 1 ? 'disabled' : ''} onclick="changeAuditPage(-1)">Previous</button><b>Page ${state.audit.page} of ${state.audit.pageCount}</b><button class="small-button" ${state.audit.page >= state.audit.pageCount ? 'disabled' : ''} onclick="changeAuditPage(1)">Next</button></div></div>`;
 }
