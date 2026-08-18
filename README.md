@@ -1,8 +1,32 @@
 # VaultBack
 
-> Self-hosted MySQL and MariaDB backup automation with a browser-based control plane.
+> A self-hosted MySQL and MariaDB backup manager for scheduled, encrypted, and verifiable database backups.
 
-VaultBack combines a GUI, JSON API, scheduler, portable database tools, encrypted configuration storage, and backup history in one Node.js application. It is designed for administrators who need scheduled backups without installing a separate database server for VaultBack itself.
+VaultBack is a web-based database backup solution for teams and administrators who need reliable backup automation under their own control. It provides a browser GUI, JSON API, scheduler, portable database client tools, storage integrations, backup history, and restore workflows in one Node.js application.
+
+Unlike a hosted backup service, VaultBack runs on your own server and sends backup archives to destinations that you configure. It does not require a separate database server for its own control-plane data: users, schedules, encrypted connection settings, sessions, audit records, and backup history are stored in an automatically managed SQLite database.
+
+## Why use VaultBack?
+
+VaultBack is designed for self-hosted applications, small teams, developers, and system administrators who want a practical MySQL/MariaDB backup system without building a collection of cron jobs and shell scripts. It makes routine backup operations visible and manageable from a single interface while keeping database credentials and operational data on your infrastructure.
+
+## Core features
+
+- **Automated database backups:** create cron-based schedules with time zones, retry policies, overlap handling, and retention rotation.
+- **Flexible backup scope:** back up every database visible to a connection or choose specific databases from a searchable, connection-grouped list.
+- **Multiple archive layouts:** create a single SQL dump, one SQL file per database, or one SQL file per table inside a ZIP archive.
+- **Compression and protection:** use GZIP or ZIP compression, optional AES-256-GCM backup-file encryption, checksums, and archive verification.
+- **Local and remote storage:** deliver backups to local folders, FTP/FTPS, WebDAV/Synology, Google Drive, or OneDrive, with a separate folder for each schedule.
+- **Recovery workflows:** download verified backup files or restore them over an existing database or into a new database name.
+- **Operations visibility:** monitor backup progress, live process logs, storage health, stale artifacts, active sessions, API rate-limit usage, and audit events.
+- **Access control:** use administrator, operator, and viewer roles with protected administrator actions and encrypted credentials at rest.
+- **Portable database tools:** use application-managed MySQL/MariaDB client utilities instead of depending on database commands installed in the operating system `PATH`.
+
+## Security and deployment at a glance
+
+Database and storage credentials are encrypted before they are stored. The encryption key is preserved separately from the SQLite database, so redeployments must retain both the configured `APP_ENCRYPTION_KEY` or `data/.encryption-key` and the application data directory. Production mode supports rate limiting, safer error responses, host validation, and HTTPS configuration.
+
+VaultBack can run locally or under PM2, aaPanel, Docker, systemd, or another process supervisor. Versioned release archives and an administrator-controlled in-app update workflow are available for deployments that should not use `git pull`.
 
 ## Start here
 
@@ -16,28 +40,7 @@ VaultBack combines a GUI, JSON API, scheduler, portable database tools, encrypte
 | Understand usage restrictions | Read [the VaultBack terms of use](docs/TERMS_OF_USE.md) |
 | Prepare portable database clients | Read [the portable database-tools guide](tools/README.md) |
 
-## Product overview
-
-### Main capabilities
-
-- Schedule MySQL/MariaDB backups using cron expressions and time zones.
-- Back up all visible databases, selected databases, one SQL file per database, or one SQL file per table.
-- Compress archives with GZIP or ZIP and optionally encrypt backup files with AES-256-GCM.
-- Store backups on local disk, FTP/FTPS, WebDAV/Synology, Google Drive, or OneDrive.
-- Keep each schedule isolated in its own storage folder and apply retention rotation per schedule.
-- Download, verify, restore over an existing database, or restore as a new database name.
-- Monitor running jobs, process stages, recent logs, sessions, API rate-limit usage, and storage capacity.
-- Manage administrator, operator, and viewer roles with protected administrator controls.
-
-### Security model
-
-- Database and storage credentials are encrypted before being written to SQLite.
-- The encryption key is kept separately in `data/.encryption-key` unless `APP_ENCRYPTION_KEY` is configured.
-- Production mode enables API rate limiting, safer 500 responses, exact host validation, and HTTPS configuration.
-- Database client commands run from the application-managed `tools/` directory rather than the operating system `PATH`.
-- Local backup artifacts, runtime data, `.env`, and executable client packs are excluded from Git.
-
-### Documentation map
+## Documentation map
 
 - [Main deployment and operations documentation](#deployment-requirements)
 - [aaPanel and PM2 deployment guide](docs/AA_PANEL.md)
