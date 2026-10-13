@@ -43,6 +43,7 @@ export interface BackupJob {
   databases: string[];
   backupLayout: 'single' | 'database' | 'table';
   backupObjects: BackupObjectOptions;
+  insertMode: 'extended' | 'single-row';
   cronExpression: string;
   timezone: string;
   enabled: boolean;

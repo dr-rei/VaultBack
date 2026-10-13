@@ -112,6 +112,8 @@ export class BackupJobDto {
   @IsOptional() @IsIn(['single', 'database', 'table']) backupLayout?: 'single' | 'database' | 'table';
   @ApiPropertyOptional({ description: 'Optional database object types included in the backup.', type: () => BackupObjectDto })
   @IsOptional() @ValidateNested() @Type(() => BackupObjectDto) backupObjects?: BackupObjectDto;
+  @ApiPropertyOptional({ description: 'SQL INSERT format: grouped rows or one row per statement.', enum: ['extended', 'single-row'], example: 'single-row', default: 'extended' })
+  @IsOptional() @IsIn(['extended', 'single-row']) insertMode?: 'extended' | 'single-row';
   @ApiProperty({ description: 'Cron expression used to schedule the backup.', example: '0 2 * * *' })
   @IsString() @IsNotEmpty() @MaxLength(128) cronExpression!: string;
   @ApiPropertyOptional({ description: 'IANA timezone used to interpret the cron expression.', example: 'Asia/Jakarta', default: 'UTC' })

@@ -15,6 +15,7 @@ VaultBack is designed for self-hosted applications, small teams, developers, and
 - **Automated database backups:** create cron-based schedules with time zones, retry policies, overlap handling, and retention rotation.
 - **Flexible backup scope:** back up every database visible to a connection or choose specific databases from a searchable, connection-grouped list.
 - **Multiple archive layouts:** create a single SQL dump, one SQL file per database, or one SQL file per table inside a ZIP archive.
+- **Configurable SQL inserts:** keep grouped rows in each INSERT or write one INSERT per row for smaller restore statements.
 - **Compression and protection:** use GZIP or ZIP compression, optional AES-256-GCM backup-file encryption, checksums, and archive verification.
 - **Local and remote storage:** deliver backups to local folders, FTP/FTPS, WebDAV/Synology, Google Drive, OneDrive, or S3-compatible storage, with a separate folder for each schedule. S3 Object Lock can be verified and used for provider-enforced COMPLIANCE retention.
 - **Recovery workflows:** download verified backup files or restore them over an existing database or into a new database name.
@@ -328,6 +329,8 @@ Schedules support three layouts:
 - **One SQL file per table** creates a ZIP containing `DatabaseName/TableName.sql` for every base table in every selected or visible database. In the schedule form, you can also include views, stored procedures/functions, triggers, and scheduled events. Selected non-table objects are written to `DatabaseName/_database-objects.sql` after the table files so restore can create dependent objects after their tables exist. Indexes are included automatically in each table definition.
 
 The split layouts always use ZIP compression. Single-file and per-database layouts include the standard database objects automatically. ZIP backups can be downloaded, verified, and restored through the normal Backup history workflow. Existing schedules keep their previous object-selection behavior until edited.
+
+The **SQL INSERT style** schedule option applies to all three layouts. **Grouped rows** is the default and preserves existing schedules. **One row per INSERT** tells the bundled dump tool to use `--skip-extended-insert`, reducing the size of each SQL statement during restore. It usually creates larger backup files and can make a full restore slower because the server executes more statements. Changing the option affects future backups; existing backup files keep their original format.
 
 ### Backup folder layout
 

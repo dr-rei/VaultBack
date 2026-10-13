@@ -1,5 +1,5 @@
 import { ValidationPipe } from '@nestjs/common';
-import { CredentialsDto } from '../src/common/request-dtos';
+import { BackupJobDto, CredentialsDto } from '../src/common/request-dtos';
 
 describe('global request validation contract', () => {
   const pipe = new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true });
@@ -18,5 +18,18 @@ describe('global request validation contract', () => {
     );
     expect(value).toBeInstanceOf(CredentialsDto);
     expect(value.username).toBe('admin');
+  });
+
+  it('accepts only supported schedule INSERT styles', async () => {
+    const metadata = { type: 'body' as const, metatype: BackupJobDto, data: '' };
+    const value = await pipe.transform(
+      { name: 'Nightly', cronExpression: '0 2 * * *', insertMode: 'single-row' },
+      metadata
+    );
+    expect(value.insertMode).toBe('single-row');
+    await expect(pipe.transform(
+      { name: 'Nightly', cronExpression: '0 2 * * *', insertMode: 'batch' },
+      metadata
+    )).rejects.toThrow();
   });
 });
