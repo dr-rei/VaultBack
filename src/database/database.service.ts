@@ -41,7 +41,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     fs.mkdirSync(this.dataDir, { recursive: true }); fs.mkdirSync(path.join(this.dataDir, 'tmp'), { recursive: true }); this.applyPendingImport();
     const SQL = await initSqlJs({ locateFile: file => require.resolve(`sql.js/dist/${file}`) });
     const native = fs.existsSync(this.dbFile) ? new SQL.Database(new Uint8Array(fs.readFileSync(this.dbFile))) : new SQL.Database();
-    this.db.open(native); this.migrate(); this.checkEncryptionKey();
+    this.db.open(native); this.migrate(); this.getEncryptionKey(); this.checkEncryptionKey();
     try { fs.chmodSync(this.dbFile, 0o600); fs.chmodSync(this.dataDir, 0o700); } catch {}
   }
 
