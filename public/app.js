@@ -842,6 +842,90 @@ function backupActivityDateLabel(value) {
   return Number.isFinite(date.getTime()) ? date.toLocaleDateString([], { dateStyle: 'long', timeZone: 'UTC' }) : value;
 }
 
+let backupActivityHoveredCell = null;
+let backupActivityTooltipTarget = null;
+function showBackupActivityTooltip(target) {
+  if (!(target instanceof HTMLElement)) return;
+  let tooltip = document.getElementById('backup-activity-tooltip');
+  if (!tooltip) {
+    tooltip = document.createElement('div');
+    tooltip.id = 'backup-activity-tooltip';
+    tooltip.className = 'backup-activity-tooltip';
+    tooltip.setAttribute('role', 'tooltip');
+    tooltip.hidden = true;
+    document.body.appendChild(tooltip);
+  }
+
+  const success = Number(target.dataset.tooltipSuccess || 0);
+  const failed = Number(target.dataset.tooltipFailed || 0);
+  const running = Number(target.dataset.tooltipRunning || 0);
+  const completed = success + failed;
+  const rate = completed > 0 ? `${Math.round(success / completed * 100)}% success rate` : 'No completed runs';
+  tooltip.innerHTML = `<div class="backup-activity-tooltip-head"><strong>${esc(target.dataset.tooltipDate)}</strong><span class="backup-activity-tooltip-rate ${failed > 0 ? 'has-failures' : ''}">${esc(rate)}</span></div>${completed || running ? `<div class="backup-activity-tooltip-stats"><div><i class="is-success"></i><span>Successful</span><b>${success}</b></div><div><i class="is-failed"></i><span>Failed</span><b>${failed}</b></div>${running ? `<div><i class="is-running"></i><span>Running</span><b>${running}</b></div>` : ''}</div>` : '<p class="backup-activity-tooltip-empty">No backups ran on this day.</p>'}`;
+  if (backupActivityTooltipTarget && backupActivityTooltipTarget !== target) backupActivityTooltipTarget.removeAttribute('aria-describedby');
+  backupActivityTooltipTarget = target;
+  tooltip.hidden = false;
+  tooltip.setAttribute('aria-hidden', 'false');
+  target.setAttribute('aria-describedby', tooltip.id);
+
+  const cell = target.getBoundingClientRect();
+  const bounds = tooltip.getBoundingClientRect();
+  const edge = 12;
+  const gap = 10;
+  const below = cell.top < bounds.height + gap + edge;
+  const left = Math.max(edge, Math.min(window.innerWidth - bounds.width - edge, cell.left + cell.width / 2 - bounds.width / 2));
+  const top = Math.max(edge, Math.min(window.innerHeight - bounds.height - edge, below ? cell.bottom + gap : cell.top - bounds.height - gap));
+  const arrow = Math.max(14, Math.min(bounds.width - 14, cell.left + cell.width / 2 - left));
+  tooltip.classList.toggle('below', below);
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+  tooltip.style.setProperty('--backup-tooltip-arrow-left', `${arrow}px`);
+  requestAnimationFrame(() => { if (!tooltip.hidden) tooltip.classList.add('visible'); });
+}
+
+function hideBackupActivityTooltip(target) {
+  const tooltip = document.getElementById('backup-activity-tooltip');
+  if (target && backupActivityTooltipTarget && backupActivityTooltipTarget !== target) return;
+  const describedTarget = backupActivityTooltipTarget || target;
+  if (tooltip && describedTarget?.getAttribute('aria-describedby') === tooltip.id) describedTarget.removeAttribute('aria-describedby');
+  backupActivityTooltipTarget = null;
+  if (!tooltip || tooltip.hidden) return;
+  tooltip.classList.remove('visible', 'below');
+  tooltip.setAttribute('aria-hidden', 'true');
+  tooltip.hidden = true;
+}
+
+document.addEventListener('pointerover', event => {
+  if (event.pointerType === 'touch') return;
+  const target = event.target instanceof Element ? event.target.closest('.backup-activity-cell:not(.is-padding)') : null;
+  if (!target) return;
+  backupActivityHoveredCell = target;
+  showBackupActivityTooltip(target);
+});
+document.addEventListener('pointerout', event => {
+  const target = event.target instanceof Element ? event.target.closest('.backup-activity-cell:not(.is-padding)') : null;
+  if (!target || target.contains(event.relatedTarget)) return;
+  if (backupActivityHoveredCell === target) backupActivityHoveredCell = null;
+  if (document.activeElement !== target) hideBackupActivityTooltip(target);
+});
+document.addEventListener('focusin', event => {
+  const target = event.target instanceof Element ? event.target.closest('.backup-activity-cell:not(.is-padding)') : null;
+  if (target) showBackupActivityTooltip(target);
+});
+document.addEventListener('focusout', event => {
+  const target = event.target instanceof Element ? event.target.closest('.backup-activity-cell:not(.is-padding)') : null;
+  if (target && backupActivityHoveredCell !== target) hideBackupActivityTooltip(target);
+});
+document.addEventListener('click', event => {
+  const target = event.target instanceof Element ? event.target.closest('.backup-activity-cell:not(.is-padding)') : null;
+  if (target) hideBackupActivityTooltip(target);
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') hideBackupActivityTooltip();
+});
+window.addEventListener('scroll', () => hideBackupActivityTooltip(), true);
+window.addEventListener('resize', () => hideBackupActivityTooltip());
+
 function renderBackupActivity() {
   const root = $('#overview-backup-activity');
   const data = state.backupActivity;
@@ -863,7 +947,7 @@ function renderBackupActivity() {
     const style = status === 'is-success' || status === 'is-failed' ? ` style="--backup-activity-opacity:${opacity.toFixed(2)}"` : '';
     const rateLabel = total > 0 ? `${Math.round(completedRate * 100)}% completed success rate` : 'No backup actions';
     const label = `${backupActivityDateLabel(day.date)}: ${rateLabel}; ${success} successful, ${failed} failed${running ? `, ${running} running` : ''}`;
-    return `<button type="button" class="backup-activity-cell ${status}"${style} title="${esc(label)}" aria-label="${esc(label)}" onclick="setView('runs')"></button>`;
+    return `<button type="button" class="backup-activity-cell ${status}"${style} data-tooltip-date="${esc(backupActivityDateLabel(day.date))}" data-tooltip-success="${success}" data-tooltip-failed="${failed}" data-tooltip-running="${running}" aria-label="${esc(label)}" onclick="setView('runs')"></button>`;
   }).join('');
   const successTotal = Number(data.successTotal || 0); const failedTotal = Number(data.failedTotal || 0);
   root.innerHTML = `<div class="backup-activity-summary"><span><b>${successTotal}</b> successful backup${successTotal === 1 ? '' : 's'}</span><span><b>${failedTotal}</b> failed${failedTotal === 1 ? '' : ' runs'}</span><span class="backup-activity-legend"><i class="is-success"></i>Success <i class="is-failed"></i>Failed <i class="is-empty"></i>No run</span></div><div class="backup-activity-calendar"><div class="backup-activity-weekdays" aria-hidden="true"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div><div class="backup-activity-grid" role="grid" aria-label="Backup activity for the last 26 weeks">${cellMarkup}</div></div><p class="backup-activity-note">${esc(data.from)} to ${esc(data.to)} · Select a day to open backup history.</p>`;
