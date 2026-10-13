@@ -80,7 +80,7 @@ export class BackupController {
   @ApiParam({ name: 'id', description: 'Backup schedule ID.' })
   @ApiOperation({ summary: 'Run a backup schedule immediately.' })
   @ApiExampleResponse(201, 'Backup run started.', { id: 'run_01HXYZ123', jobId: 'job_01HXYZ123', status: 'running', startedAt: '2026-08-03T07:30:00.000Z' })
-  run(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireSession(req, true); return this.backups.runNow(id); }
+  run(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.backups.runNow(id); }
   @Get('processes')
   @ApiOperation({ summary: 'List live and recently completed backup processes.' })
   @ApiExampleResponse(200, 'Live and recent process state.', { items: [{ id: 'run_01HXYZ123', jobId: 'job_01HXYZ123', jobName: 'Nightly production backup', status: 'running', stage: 'dumping', startedAt: '2026-08-03T07:30:00.000Z', updatedAt: '2026-08-03T07:30:08.000Z', logs: ['Backup started', 'Dumping selected databases'] }], updatedAt: '2026-08-03T07:30:08.000Z' })
@@ -101,7 +101,7 @@ export class BackupController {
   @ApiParam({ name: 'id', description: 'Backup run ID.' })
   @ApiOperation({ summary: 'Prepare a backup download and report progress.' })
   @ApiExampleResponse(201, 'Download preparation started.', { id: 'download_01HXYZ123', runId: 'run_01HXYZ123', filename: 'production-backup-2026-08-03.sql.gz', state: 'preparing', percent: 0, stage: 'checking', message: 'Checking backup availability', updatedAt: 1754206200000 })
-  prepareDownload(@Req() req: FastifyRequest, @Param('id') id: string) { const session = this.auth.requireSession(req); return this.backups.startDownloadPreparation(id, session.user_id); }
+  prepareDownload(@Req() req: FastifyRequest, @Param('id') id: string) { const session = this.auth.requireSession(req, true); return this.backups.startDownloadPreparation(id, session.user_id); }
   @Get('downloads/:id/status')
   @ApiParam({ name: 'id', description: 'Download preparation ID.' })
   @ApiOperation({ summary: 'Read backup download preparation progress.' })
@@ -144,7 +144,7 @@ export class BackupController {
   @ApiParam({ name: 'id', description: 'Backup run ID.' })
   @ApiOperation({ summary: 'Retry a failed backup run.' })
   @ApiExampleResponse(201, 'Retry started.', { id: 'run_01HXYZ456', jobId: 'job_01HXYZ123', status: 'running', startedAt: '2026-08-03T07:35:00.000Z' })
-  retry(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireSession(req, true); return this.backups.retryRun(id); }
+  retry(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.backups.retryRun(id); }
   @Get('runs/:id/verification')
   @ApiParam({ name: 'id', description: 'Backup run ID.' })
   @ApiOperation({ summary: 'Read backup verification results.' })

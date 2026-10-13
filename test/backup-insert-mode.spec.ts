@@ -112,4 +112,30 @@ describe('backup schedule INSERT style', () => {
     await service.dump({ ...connection, ssl: true }, path.join(dataDir, 'mysql-ssl.sql'), undefined, 'single-row');
     expect(mockedSpawn.mock.calls[5][1]).toContain('--ssl-mode=REQUIRED');
   });
+
+  it('uses explicit user databases and the engine-specific coordinate option for PITR baselines', async () => {
+    const mockedSpawn = spawn as jest.Mock;
+    mockedSpawn.mockImplementation(() => {
+      const child = new EventEmitter() as any;
+      child.stdout = Readable.from([]);
+      child.stderr = Readable.from([]);
+      child.stdout.on('end', () => setImmediate(() => child.emit('close', 0)));
+      return child;
+    });
+    const service = backups as any;
+    service.resolveClientBinary = (engine: string) => engine === 'mysql' ? 'mysqldump' : 'mariadb-dump';
+    service.clientToolArgs = () => ['--no-defaults'];
+    const connection = {
+      engine: 'mysql', host: '127.0.0.1', port: 3306, username: 'tester', password: '', ssl: false,
+      databaseScope: 'all', databases: ['app']
+    } as DatabaseConnection;
+
+    await service.dump(connection, path.join(dataDir, 'mysql-pitr.sql'), undefined, 'extended', true);
+    expect(mockedSpawn.mock.calls[0][1]).toContain('--databases');
+    expect(mockedSpawn.mock.calls[0][1]).toContain('--source-data=2');
+    expect(mockedSpawn.mock.calls[0][1]).not.toContain('--all-databases');
+
+    await service.dump({ ...connection, engine: 'mariadb' }, path.join(dataDir, 'mariadb-pitr.sql'), undefined, 'extended', true);
+    expect(mockedSpawn.mock.calls[1][1]).toContain('--master-data=2');
+  });
 });

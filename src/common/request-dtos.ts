@@ -147,7 +147,7 @@ export class RestoreDto {
   @IsOptional() @IsString() @MaxLength(64) databaseName?: string;
   @ApiProperty({ description: 'Must be true to confirm an overwrite when mode is overwrite.', example: false })
   @IsBoolean() overwriteConfirmed!: boolean;
-  @ApiPropertyOptional({ description: 'Verify the restored database after import.', example: true, default: true })
+  @ApiPropertyOptional({ description: 'Legacy compatibility field; every restore is verified before success is reported.', example: true, default: true })
   @IsOptional() @IsBoolean() verifyAfterRestore?: boolean;
 }
 
@@ -228,6 +228,30 @@ export class PitrCaptureDto {
   @IsString() @IsNotEmpty() @MaxLength(128) connectionId!: string;
   @ApiProperty({ description: 'Storage target where the raw binary log files will be uploaded.', example: 'storage_01HXYZ123' })
   @IsString() @IsNotEmpty() @MaxLength(128) storageTargetId!: string;
+}
+
+export class PitrConfigurationDto {
+  @ApiProperty({ description: 'MySQL or MariaDB source connection to configure for PITR.', example: 'conn_01HXYZ123' })
+  @IsString() @IsNotEmpty() @MaxLength(128) connectionId!: string;
+  @ApiProperty({ description: 'Enabled full all-database schedule that will record a matching baseline coordinate.', example: 'job_01HXYZ456' })
+  @IsString() @IsNotEmpty() @MaxLength(128) backupJobId!: string;
+  @ApiProperty({ description: 'Storage target for captured binary log artifacts.', example: 'storage_01HXYZ789' })
+  @IsString() @IsNotEmpty() @MaxLength(128) storageTargetId!: string;
+  @ApiPropertyOptional({ description: 'Minutes between binary log captures.', minimum: 1, maximum: 1440, default: 15 })
+  @IsOptional() @IsInt() @Min(1) @Max(1440) captureIntervalMinutes?: number;
+  @ApiPropertyOptional({ description: 'Enable scheduled binary log capture.', default: true })
+  @IsOptional() @IsBoolean() enabled?: boolean;
+}
+
+export class PitrRehearsalDto {
+  @ApiProperty({ description: 'Source database connection ID.', example: 'conn_01HXYZ123' })
+  @IsString() @IsNotEmpty() @MaxLength(128) connectionId!: string;
+  @ApiProperty({ description: 'Successful full all-database baseline backup run ID.', example: 'run_01HXYZ123' })
+  @IsString() @IsNotEmpty() @MaxLength(128) backupRunId!: string;
+  @ApiProperty({ description: 'Dedicated recovery-only database connection ID.', example: 'recovery_conn_01HXYZ123' })
+  @IsString() @IsNotEmpty() @MaxLength(128) recoveryConnectionId!: string;
+  @ApiProperty({ description: 'UTC recovery point, encoded as an ISO-8601 timestamp ending in Z.', example: '2026-10-13T04:30:00.000Z' })
+  @IsString() @IsNotEmpty() @MaxLength(40) targetTime!: string;
 }
 
 export class FleetEnrollmentDto {

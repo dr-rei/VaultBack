@@ -3,7 +3,7 @@ import { FastifyRequest } from 'fastify';
 import { ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiCommonErrorResponses, ApiExampleResponse } from '../common/swagger-responses';
 import { AuthService } from '../auth/auth.service';
-import { RecoveryPlanDto, RecoveryConnectionDto, FleetEnrollmentDto, PitrCaptureDto } from '../common/request-dtos';
+import { RecoveryPlanDto, RecoveryConnectionDto, FleetEnrollmentDto, PitrCaptureDto, PitrConfigurationDto, PitrRehearsalDto } from '../common/request-dtos';
 import { RecoveryService } from './recovery.service';
 
 @Controller('api/recovery')
@@ -38,10 +38,19 @@ export class RecoveryController {
   @Post('plans/:id/run') runTest(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.recovery.runTest(id); }
   @Get('tests') tests(@Req() req: FastifyRequest) { this.auth.requireSession(req); return this.recovery.listTests(); }
   @Get('pitr') pitr(@Req() req: FastifyRequest) { this.auth.requireAdmin(req); return this.recovery.pitrStatus(); }
+  @Post('pitr/config')
+  @ApiOperation({ summary: 'Enable or configure scheduled PITR log capture for a source.' })
+  @ApiExampleResponse(201, 'PITR source configuration saved.', { ok: true, connectionId: 'conn_01HXYZ123', enabled: true, backupJobId: 'job_01HXYZ456', storageTargetId: 'storage_01HXYZ789', captureIntervalMinutes: 15 })
+  configurePitr(@Req() req: FastifyRequest, @Body() body: PitrConfigurationDto) { this.auth.requireAdmin(req); return this.recovery.savePitrConfiguration(body); }
   @Post('pitr/capture')
   @ApiOperation({ summary: 'Capture the currently available raw binary logs to a storage target.' })
   @ApiExampleResponse(201, 'Raw binary-log capture result. This does not apply logs to a destination.', { ok: true, captured: 2, warning: 'This captures raw binlog files for later PITR processing. VaultBack does not apply binlogs to a destination automatically yet.' })
   capturePitr(@Req() req: FastifyRequest, @Body() body: PitrCaptureDto) { this.auth.requireAdmin(req); return this.recovery.capturePitr(body.connectionId, body.storageTargetId); }
+  @Post('pitr/rehearsals')
+  @ApiOperation({ summary: 'Start an isolated UTC point-in-time restore rehearsal.' })
+  @ApiExampleResponse(201, 'PITR rehearsal queued.', { ok: true, id: 'pitr_rehearsal_01HXYZ123', status: 'running', targetTime: '2026-10-13T04:30:00.000Z' })
+  startPitrRehearsal(@Req() req: FastifyRequest, @Body() body: PitrRehearsalDto) { this.auth.requireAdmin(req); return this.recovery.startPitrRehearsal(body); }
+  @Get('pitr/rehearsals/:id') getPitrRehearsal(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.recovery.getPitrRehearsal(id); }
   @Get('runbooks') runbooks(@Req() req: FastifyRequest) { this.auth.requireSession(req); return this.recovery.runbooks(); }
   @Get('fleet') fleet(@Req() req: FastifyRequest) { this.auth.requireAdmin(req); return this.recovery.listFleet(); }
   @Post('fleet/enroll') enroll(@Req() req: FastifyRequest, @Body() body: FleetEnrollmentDto) { this.auth.requireAdmin(req); return this.recovery.enrollFleet(body); }

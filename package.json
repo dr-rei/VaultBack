@@ -1,6 +1,6 @@
 {
   "name": "vaultback-db-backup",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Secure, self-hosted database backup manager with a GUI",
   "license": "UNLICENSED",
@@ -35,7 +35,7 @@
     "@nestjs/schedule": "^5.0.1",
     "@nestjs/swagger": "^11.4.7",
     "@nestjs/terminus": "^11.1.1",
-    "basic-ftp": "^5.0.5",
+    "basic-ftp": "^6.2.3",
     "bcryptjs": "^3.0.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
@@ -56,6 +56,8 @@
     "typescript": "^5.7.3"
   },
   "overrides": {
-    "find-my-way": "^9.7.0"
+    "find-my-way": "^9.7.0",
+    "fastify": "^5.12.5",
+    "js-yaml": "^5.4.3"
   }
 }
