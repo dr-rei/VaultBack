@@ -89,16 +89,14 @@ describe('PITR and restore safety workflows', () => {
   });
 
   it('serializes claims across service instances and releases them for a later run', async () => {
-    const store2 = new DatabaseService();
-    await store2.onModuleInit();
-    const backups2 = new BackupService(store2, storage, {} as any, {} as any);
+    // DATA_DIR has one writer; feature instances share that writer.
+    const backups2 = new BackupService(store, storage, {} as any, {} as any);
     const first = (backups as any).acquireWorkClaim('backup:job', 'claimed');
     expect(() => (backups2 as any).acquireWorkClaim('backup:job', 'claimed')).toThrow('claimed');
     (backups as any).releaseWorkClaim('backup:job', first);
     const second = (backups2 as any).acquireWorkClaim('backup:job', 'claimed');
     expect(second).toBeTruthy();
     (backups2 as any).releaseWorkClaim('backup:job', second);
-    store2.onModuleDestroy();
   });
 
   it('returns per-source results and marks an aggregate multi-source run failed when one pair fails', async () => {

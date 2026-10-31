@@ -87,7 +87,20 @@ export class DatabaseSelectionDto {
   @IsArray() @IsString({ each: true }) @MaxLength(5000, { each: true }) databases!: string[];
 }
 
+export class StorageRequirementDto {
+  @IsString() @IsNotEmpty() @MaxLength(128) storageTargetId!: string;
+  @IsBoolean() required!: boolean;
+}
+
 export class BackupJobDto {
+  @ApiPropertyOptional({type: () => [StorageRequirementDto]})
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => StorageRequirementDto) storageRequirements?: StorageRequirementDto[];
+  @ApiPropertyOptional({default:15,minimum:1,maximum:1440})
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(1440) missedStartGraceMinutes?: number;
+  @ApiPropertyOptional({default:26,minimum:1,maximum:8760})
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(8760) maxVerifiedAgeHours?: number;
+  @ApiPropertyOptional({default:120,minimum:1,maximum:10080})
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(10080) longRunningWarningMinutes?: number;
   @ApiPropertyOptional({ description: 'Existing schedule ID. Omit when creating a schedule.', example: 'job_01HXYZ123' })
   @IsOptional() @IsString() @MaxLength(128) id?: string;
   @ApiProperty({ description: 'Schedule display name.', example: 'Nightly production backup' })
@@ -159,6 +172,12 @@ export class EnvironmentDto {
 }
 
 export class NotificationEventsDto {
+  @ApiPropertyOptional({ description: 'Notify when automatic retry recovers an execution.', example: true })
+  @IsOptional() @IsBoolean() backup_recovered?: boolean;
+  @ApiPropertyOptional({ description: 'Notify when scheduled work misses its start.', example: true })
+  @IsOptional() @IsBoolean() backup_missed_start?: boolean;
+  @ApiPropertyOptional({ description: 'Notify when backup work runs too long.', example: true })
+  @IsOptional() @IsBoolean() backup_long_running?: boolean;
   @ApiPropertyOptional({ description: 'Notify when a backup succeeds.', example: true })
   @IsOptional() @IsBoolean() backup_success?: boolean;
   @ApiPropertyOptional({ description: 'Notify when a backup fails.', example: true })
@@ -254,6 +273,11 @@ export class PitrRehearsalDto {
   @IsString() @IsNotEmpty() @MaxLength(40) targetTime!: string;
 }
 
+export class ArtifactRehearsalDto {
+  @IsString() @IsNotEmpty() @MaxLength(128) backupRunId!: string;
+  @IsString() @IsNotEmpty() @MaxLength(128) recoveryConnectionId!: string;
+}
+
 export class FleetEnrollmentDto {
   @ApiProperty({ description: 'Friendly name for the enrolled VaultBack installation.', example: 'Production backup server' })
   @IsString() @IsNotEmpty() @MaxLength(128) name!: string;
@@ -261,4 +285,22 @@ export class FleetEnrollmentDto {
   @IsString() @IsNotEmpty() @MaxLength(128) installationId!: string;
   @ApiProperty({ description: 'One-time enrollment token. It is hashed and never returned after enrollment.', example: 'one-time-enrollment-token', minLength: 16, maxLength: 512, format: 'password' })
   @IsString() @MinLength(16) @MaxLength(512) token!: string;
+}
+
+export class ExecutionPairDto {
+  @IsString() @IsNotEmpty() @MaxLength(200) connectionId!: string;
+  @IsString() @IsNotEmpty() @MaxLength(200) storageTargetId!: string;
+}
+export class ExecutionRetryDto {
+  @IsArray() @ValidateNested({each:true}) @Type(() => ExecutionPairDto) pairs!: ExecutionPairDto[];
+}
+export class ExecutionCancelDto {
+  @IsOptional() @IsBoolean() stopRunningConfirmed?: boolean;
+}
+export class SourceGroupDto {
+  @IsOptional() @IsInt() @Min(1) @Max(32) globalConcurrency?: number;
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(200) id?: string;
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(200) name?: string;
+  @IsOptional() @IsArray() @IsString({each:true}) connectionIds?: string[];
+  @IsOptional() @IsInt() @Min(1) @Max(8) concurrency?: number;
 }

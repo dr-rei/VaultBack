@@ -3,6 +3,8 @@ import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { types } from 'node:util';
+import { DataOwner } from './data-owner';
 
 class StatementWrapper {
   constructor(private readonly database: SqliteFile, private readonly sql: string) {}
@@ -11,38 +13,90 @@ class StatementWrapper {
   run(...params: unknown[]) { return this.database.execute(this.sql, params); }
 }
 
-class SqliteFile {
+export class SqliteFile {
+  private transactionDepth = 0;
+  private opened = false;
   private native!: SqlJsDatabase;
   constructor(private readonly filePath: string) {}
-  open(native: SqlJsDatabase) { this.native = native; }
+  open(native: SqlJsDatabase) { this.native = native; this.opened = true; }
   prepare(sql: string) { return new StatementWrapper(this, sql); }
-  exec(sql: string) { this.native.run(sql); this.persist(); }
+  exec(sql: string) { this.transaction(() => { this.native.run(sql); }); }
   queryOne(sql: string, params: unknown[]) { const rows = this.queryAll(sql, params); return rows[0]; }
   queryAll(sql: string, params: unknown[]) {
     const statement = this.native.prepare(sql); statement.bind(params as any); const rows: Record<string, unknown>[] = [];
-    while (statement.step()) rows.push(statement.getAsObject() as Record<string, unknown>);
-    statement.free(); return rows;
+    try { while (statement.step()) rows.push(statement.getAsObject() as Record<string, unknown>); return rows; }
+    finally { statement.free(); }
   }
   execute(sql: string, params: unknown[]) {
-    this.native.run(sql, params as any); const changes = this.native.getRowsModified(); this.persist(); return { changes };
+    return this.transaction(() => { this.native.run(sql, params as any); return { changes: this.native.getRowsModified() }; });
   }
-  persist() { fs.writeFileSync(this.filePath, Buffer.from(this.native.export())); }
-  close() { if (this.native) { this.persist(); this.native.close(); } }
+  transaction<T>(work: () => T): T {
+    // Reject native async callbacks before they can schedule writes after an await.
+    if (types.isAsyncFunction(work)) throw new Error('SQLite transactions must be synchronous');
+    // Each level owns a snapshot so a caught inner failure cannot leak partial writes.
+    const before = this.native.export();
+    this.transactionDepth++;
+    try {
+      const value = work();
+      if (value && typeof (value as any).then === 'function') throw new Error('SQLite transactions must be synchronous');
+      if (this.transactionDepth === 1) this.persist();
+      return value;
+    } catch (error) {
+      this.native.close();
+      const Constructor = this.native.constructor as new (bytes: Uint8Array) => SqlJsDatabase;
+      this.native = new Constructor(before);
+      throw error;
+    } finally { this.transactionDepth--; }
+  }
+  persist() {
+    const temporary = `${this.filePath}.${crypto.randomUUID()}.tmp`;
+    let fd: number | undefined;
+    try {
+      const mode = fs.existsSync(this.filePath) ? fs.statSync(this.filePath).mode & 0o777 : 0o600;
+      fd = fs.openSync(temporary, 'wx', mode);
+      fs.fchmodSync(fd, mode);
+      fs.writeFileSync(fd, Buffer.from(this.native.export())); fs.fsyncSync(fd);
+      fs.closeSync(fd); fd = undefined;
+      fs.renameSync(temporary, this.filePath);
+      // Rename has committed. Directory sync is best effort (unsupported on Windows);
+      // a sync failure must not restore memory to the pre-commit database.
+      let directoryFd: number | undefined;
+      try { directoryFd = fs.openSync(path.dirname(this.filePath), 'r'); fs.fsyncSync(directoryFd); }
+      catch { /* Filesystem does not support directory fsync. */ }
+      finally { if (directoryFd !== undefined) { try { fs.closeSync(directoryFd); } catch {} } }
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+      fs.rmSync(temporary, { force: true });
+    }
+  }
+  close(persist = true) { if (this.opened) { if (persist) this.persist(); this.native.close(); this.opened = false; } }
 }
 
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
-  readonly db = new SqliteFile(path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'), 'vaultback.sqlite'));
+  private releaseOwner?: () => void;
+  private readonly beforeCloseHooks: (() => Promise<void>)[] = [];
+  registerBeforeClose(hook: () => Promise<void>) { this.beforeCloseHooks.push(hook); }
+  private readonly dbFile = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'), 'vaultback.sqlite');
+  readonly db = new SqliteFile(this.dbFile);
   readonly dataDir = path.dirname(this.dbFile);
   private encryptionCheck: { status: 'ok' | 'error'; message: string; checkedRecords: number; checkedAt: string } = { status: 'ok', message: 'Encryption integrity has not been checked yet', checkedRecords: 0, checkedAt: '' };
-  private get dbFile() { return path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'), 'vaultback.sqlite'); }
 
   async onModuleInit() {
-    fs.mkdirSync(this.dataDir, { recursive: true }); fs.mkdirSync(path.join(this.dataDir, 'tmp'), { recursive: true }); this.applyPendingImport();
-    const SQL = await initSqlJs({ locateFile: file => require.resolve(`sql.js/dist/${file}`) });
-    const native = fs.existsSync(this.dbFile) ? new SQL.Database(new Uint8Array(fs.readFileSync(this.dbFile))) : new SQL.Database();
-    this.db.open(native); this.migrate(); this.getEncryptionKey(); this.checkEncryptionKey();
-    try { fs.chmodSync(this.dbFile, 0o600); fs.chmodSync(this.dataDir, 0o700); } catch {}
+    this.releaseOwner = DataOwner.acquire(this.dataDir);
+    try {
+      fs.mkdirSync(this.dataDir, { recursive: true }); fs.mkdirSync(path.join(this.dataDir, 'tmp'), { recursive: true }); this.applyPendingImport();
+      const SQL = await initSqlJs({ locateFile: file => require.resolve(`sql.js/dist/${file}`) });
+      const native = fs.existsSync(this.dbFile) ? new SQL.Database(new Uint8Array(fs.readFileSync(this.dbFile))) : new SQL.Database();
+      this.db.open(native);
+      if (fs.existsSync(this.dbFile) && !this.db.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'backup_executions')) {
+        const backup = `${this.dbFile}.before-executions.bak`;
+        if (!fs.existsSync(backup)) fs.copyFileSync(this.dbFile, backup, fs.constants.COPYFILE_EXCL);
+      }
+      this.db.transaction(() => this.migrate()); this.getEncryptionKey(); this.checkEncryptionKey();
+      try { fs.chmodSync(this.dbFile, 0o600); fs.chmodSync(this.dataDir, 0o700); } catch {}
+
+    } catch (error) { this.db.close(false); this.releaseOwner?.(); this.releaseOwner = undefined; throw error; }
   }
 
   private migrate() {
@@ -64,6 +118,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, user_id TEXT, action TEXT NOT NULL, entity_type TEXT, entity_id TEXT, metadata_json TEXT, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS recovery_plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, job_id TEXT NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE, destination_connection_id TEXT NOT NULL REFERENCES database_connections(id) ON DELETE CASCADE, cron_expression TEXT NOT NULL DEFAULT '0 4 * * 0', timezone TEXT NOT NULL DEFAULT 'UTC', enabled INTEGER NOT NULL DEFAULT 1, test_database_prefix TEXT NOT NULL DEFAULT 'vaultback_recovery_test', last_test_at TEXT, next_test_at TEXT, last_status TEXT, last_message TEXT, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS recovery_tests (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES recovery_plans(id) ON DELETE CASCADE, source_run_id TEXT REFERENCES backup_runs(id) ON DELETE SET NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, test_database_name TEXT, destination_connection_id TEXT, rpo_seconds INTEGER, rto_seconds INTEGER, objects_expected INTEGER, objects_restored INTEGER, evidence_json TEXT NOT NULL DEFAULT '{}', error_message TEXT);
+      CREATE TABLE IF NOT EXISTS artifact_rehearsals (id TEXT PRIMARY KEY, backup_run_id TEXT NOT NULL, recovery_connection_id TEXT NOT NULL, actor_id TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, evidence_json TEXT NOT NULL DEFAULT '{}', error_message TEXT);
       CREATE TABLE IF NOT EXISTS pitr_sources (connection_id TEXT PRIMARY KEY REFERENCES database_connections(id) ON DELETE CASCADE, storage_target_id TEXT REFERENCES storage_targets(id) ON DELETE SET NULL, enabled INTEGER NOT NULL DEFAULT 0, capture_interval_minutes INTEGER NOT NULL DEFAULT 15, last_scan_at TEXT, last_capture_at TEXT, binlog_status TEXT NOT NULL DEFAULT 'unknown', earliest_binlog_at TEXT, latest_binlog_at TEXT, checkpoint_json TEXT NOT NULL DEFAULT '{}', gap_status TEXT NOT NULL DEFAULT 'unknown', message TEXT NOT NULL DEFAULT 'Not checked', base_job_id TEXT REFERENCES backup_jobs(id) ON DELETE SET NULL, next_capture_at TEXT, last_continuous_at TEXT);
       CREATE TABLE IF NOT EXISTS pitr_artifacts (id TEXT PRIMARY KEY, connection_id TEXT NOT NULL REFERENCES database_connections(id) ON DELETE CASCADE, storage_target_id TEXT NOT NULL REFERENCES storage_targets(id) ON DELETE CASCADE, binlog_name TEXT NOT NULL, storage_location TEXT, storage_folder TEXT NOT NULL, size_bytes INTEGER, sha256 TEXT, captured_at TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', capture_id TEXT, capture_kind TEXT NOT NULL DEFAULT 'manual', log_position INTEGER, log_size INTEGER, UNIQUE(connection_id, storage_target_id, binlog_name, storage_folder));
       CREATE TABLE IF NOT EXISTS pitr_rehearsals (id TEXT PRIMARY KEY, connection_id TEXT NOT NULL REFERENCES database_connections(id) ON DELETE CASCADE, backup_run_id TEXT NOT NULL REFERENCES backup_runs(id) ON DELETE CASCADE, recovery_connection_id TEXT NOT NULL REFERENCES database_connections(id) ON DELETE CASCADE, target_time TEXT NOT NULL, status TEXT NOT NULL, progress INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT 'queued', started_at TEXT NOT NULL, finished_at TEXT, evidence_json TEXT NOT NULL DEFAULT '{}', error_message TEXT);
@@ -74,6 +129,31 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       CREATE INDEX IF NOT EXISTS idx_recovery_plans_next_test ON recovery_plans(enabled, next_test_at);
       CREATE INDEX IF NOT EXISTS idx_pitr_artifacts_connection_captured ON pitr_artifacts(connection_id, captured_at DESC);
     `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS source_groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1 CHECK(concurrency BETWEEN 1 AND 8), created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS backup_executions (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, trigger TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', scheduled_for TEXT, queued_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, parent_execution_id TEXT, actor_id TEXT, priority INTEGER NOT NULL DEFAULT 0, enqueue_sequence INTEGER, snapshot_json TEXT NOT NULL DEFAULT '{}', cleanup_warnings_json TEXT NOT NULL DEFAULT '[]', missed_count INTEGER NOT NULL DEFAULT 0, missed_from TEXT, missed_to TEXT, UNIQUE(job_id, scheduled_for));
+      CREATE TABLE IF NOT EXISTS backup_execution_pairs (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL REFERENCES backup_executions(id), connection_id TEXT NOT NULL, storage_target_id TEXT NOT NULL, fingerprint TEXT NOT NULL, source_group_id TEXT NOT NULL, required INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'queued', wait_reason TEXT, snapshot_json TEXT NOT NULL DEFAULT '{}', next_attempt_at TEXT, started_at TEXT, finished_at TEXT, cleanup_warnings_json TEXT NOT NULL DEFAULT '[]', UNIQUE(execution_id, connection_id, storage_target_id));
+      CREATE TABLE IF NOT EXISTS backup_execution_attempts (id TEXT PRIMARY KEY, pair_id TEXT NOT NULL REFERENCES backup_execution_pairs(id), attempt_number INTEGER NOT NULL, status TEXT NOT NULL, backup_run_id TEXT, started_at TEXT, finished_at TEXT, failed_stage TEXT, error_message TEXT, cleanup_warnings_json TEXT NOT NULL DEFAULT '[]', UNIQUE(pair_id, attempt_number));
+      CREATE TABLE IF NOT EXISTS execution_events (id TEXT PRIMARY KEY, execution_id TEXT, pair_id TEXT, kind TEXT NOT NULL, actor_id TEXT, payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS notification_outbox (id TEXT PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, execution_id TEXT, incident_id TEXT, kind TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL, delivered_at TEXT, last_error TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS protection_incidents (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, connection_id TEXT NOT NULL, storage_target_id TEXT NOT NULL, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', opened_at TEXT NOT NULL, updated_at TEXT NOT NULL, resolved_at TEXT, evidence_json TEXT NOT NULL DEFAULT '{}');
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_protection_open ON protection_incidents(job_id, connection_id, storage_target_id, fingerprint, kind) WHERE status = 'open';
+      CREATE INDEX IF NOT EXISTS idx_execution_queue ON backup_executions(status, priority, enqueue_sequence);
+      CREATE INDEX IF NOT EXISTS idx_attempt_pair ON backup_execution_attempts(pair_id, attempt_number);
+    `);
+    const additions: [string, string, string][] = [
+      ['storage_health', 'free_bytes', 'INTEGER'],
+      ['database_connections', 'source_group_id', 'TEXT'],
+      ['backup_job_storages', 'required', 'INTEGER NOT NULL DEFAULT 1 CHECK(required IN (0,1))'],
+      ['backup_jobs', 'missed_start_grace_minutes', 'INTEGER NOT NULL DEFAULT 15 CHECK(missed_start_grace_minutes BETWEEN 1 AND 1440)'],
+      ['backup_jobs', 'max_verified_age_hours', 'INTEGER NOT NULL DEFAULT 26 CHECK(max_verified_age_hours BETWEEN 1 AND 8760)'],
+      ['backup_jobs', 'long_running_warning_minutes', 'INTEGER NOT NULL DEFAULT 120 CHECK(long_running_warning_minutes BETWEEN 1 AND 10080)'],
+      ['backup_runs', 'execution_id', 'TEXT'], ['backup_runs', 'attempt_id', 'TEXT']
+    ];
+    for (const [table, column, definition] of additions) {
+      if (!(this.db.prepare(`PRAGMA table_info(${table})`).all() as any[]).some(row => row.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+    this.db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)').run(20261031, this.now());
     try { this.db.exec("ALTER TABLE database_connections ADD COLUMN database_scope TEXT NOT NULL DEFAULT 'selected'"); } catch {}
     try { this.db.exec("ALTER TABLE database_connections ADD COLUMN database_names TEXT NOT NULL DEFAULT '[]'"); } catch {}
     try { this.db.exec("ALTER TABLE database_connections ADD COLUMN connection_purpose TEXT NOT NULL DEFAULT 'backup'"); } catch {}
@@ -161,5 +241,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private applyPendingImport() { const pendingDatabase = path.join(this.dataDir, 'vaultback.pending.sqlite'); const pendingKey = path.join(this.dataDir, '.encryption-key.pending'); if (!fs.existsSync(pendingDatabase) || !fs.existsSync(pendingKey)) return; fs.copyFileSync(pendingDatabase, this.dbFile); fs.copyFileSync(pendingKey, path.join(this.dataDir, '.encryption-key')); fs.rmSync(pendingDatabase, { force: true }); fs.rmSync(pendingKey, { force: true }); }
   deriveKey(purpose: string) { return crypto.createHmac('sha256', this.getEncryptionKey()).update(purpose).digest(); }
   now() { return new Date().toISOString(); }
-  onModuleDestroy() { this.db.close(); }
+  onModuleDestroy(): void | Promise<void> {
+    const close = () => { this.db.close(); this.releaseOwner?.(); this.releaseOwner = undefined; };
+    if (!this.beforeCloseHooks.length) { close(); return; }
+    return (async () => { for (const hook of this.beforeCloseHooks) await hook(); close(); })();
+  }
 }

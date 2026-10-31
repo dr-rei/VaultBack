@@ -40,3 +40,15 @@ The administrator-only fleet section stores an installation identity and a hash 
 ## Operational targets
 
 Record a recovery point objective (how much data may be lost) and recovery time objective (how long restoration may take) for each important schedule. Rehearse the highest-value schedule first, keep at least one isolated destination, and preserve the evidence with the application database.
+
+## Guided artifact rehearsal
+
+The Restore action in backup history first offers an isolated rehearsal. Configure a dedicated recovery connection of the same engine on a different server/source group. A normal backup connection is not accepted, including through legacy destination aliases. Host/port normalization catches identical and loopback addresses; it does not resolve DNS aliases. Use explicit source groups and network/account restrictions to ensure aliases cannot reach the production server.
+
+The administrator starts `POST /api/recovery/rehearsals` with `backupRunId` and `recoveryConnectionId`, then reads `/api/recovery/rehearsals/:runId`. The asynchronous result records the artifact checksum, destination, timestamps, generated database mapping, expected-object verification and cleanup warnings separately from recurring plans. Closing the browser dialog stops monitoring only; server cleanup continues. Shutdown waits for active rehearsal work before releasing application data ownership.
+
+Rehearsal verifies the stored SHA-256 and archive manifest, rejects empty/unverifiable expectations, validates every SQL member and its rewritten database references before creating scratch databases, and refuses collisions. Only databases positively created by that rehearsal are eligible for cleanup. Single-file, database and table archive layouts can be rehearsed when their SQL passes the isolation checks. The validator is deliberately conservative: dynamic SQL, server-level statements and some otherwise valid qualified SQL may be refused. File imports disable native client shell/source/connect commands. Unsupported SQL must not be bypassed merely to obtain a passing result.
+
+Rehearsal checks expected database/table/view objects; it does not claim application behavior, all row values, server accounts, grants, or production compatibility were verified. A cleanup warning remains visible even when object verification passed. If a process dies, inspect its recorded scratch mapping and interruption evidence before manually removing anything on the recovery server.
+
+Advanced production restore is a separate administrator action with its own warning acknowledgment and a fresh destination-specific confirmation. Rehearsal never automatically invokes it. Pair-level verified-artifact freshness and required-destination policy are described in [Operations overview](OPERATIONS_OVERVIEW.md); they are separate from rehearsal confidence.

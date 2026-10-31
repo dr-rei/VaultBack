@@ -9,7 +9,64 @@ import { PitrConfigurationDto, PitrRehearsalDto } from '../common/request-dtos';
 
 @Injectable()
 export class RecoveryService {
+  private artifactWorkers = new Set<Promise<void>>();
+  private closing = false;
+  private drainRegistered = false;
   constructor(private readonly store: DatabaseService, private readonly backups: BackupService, private readonly storage: StorageService, private readonly realtime: RealtimeService) {}
+  onApplicationBootstrap() {
+    this.store.db.prepare("UPDATE artifact_rehearsals SET status='interrupted',finished_at=?,error_message='Application stopped before rehearsal completed; inspect the recorded scratch database names before manual cleanup' WHERE status='running'").run(this.store.now());
+  }
+
+  rehearseArtifact(input: {backupRunId: string; recoveryConnectionId: string}, actor: {userId: string}) {
+    if (this.closing) throw new BadRequestException('Application is shutting down');
+    const run = this.store.db.prepare('SELECT * FROM backup_runs WHERE id=?').get(input.backupRunId) as any;
+    if (!run || run.status !== 'success' || !run.filename || !/^[a-f0-9]{64}$/i.test(run.sha256 || '')) throw new BadRequestException('Select a completed artifact with a recorded SHA-256');
+    this.assertRecoveryDestination(run.database_connection_id, input.recoveryConnectionId);
+    if (!this.drainRegistered) {
+      this.drainRegistered = true;
+      this.store.registerBeforeClose(async () => { this.closing = true; await Promise.allSettled([...this.artifactWorkers]); });
+    }
+    const active = this.store.db.prepare("SELECT id FROM artifact_rehearsals WHERE recovery_connection_id=? AND status='running'").get(input.recoveryConnectionId);
+    if (active) throw new BadRequestException('A rehearsal is already running on this recovery connection');
+    const runId = crypto.randomUUID();
+    const evidence = { backupRunId: run.id, sha256: run.sha256, filename: run.filename, recoveryConnectionId: input.recoveryConnectionId };
+    this.store.db.prepare('INSERT INTO artifact_rehearsals(id,backup_run_id,recovery_connection_id,actor_id,status,started_at,evidence_json) VALUES (?,?,?,?,?,?,?)').run(runId,run.id,input.recoveryConnectionId,actor.userId,'running',this.store.now(),JSON.stringify(evidence));
+    const work = Promise.resolve().then(async () => {
+      try {
+        this.assertRecoveryDestination(run.database_connection_id,input.recoveryConnectionId);
+        const result = await this.backups.restoreArtifactForRehearsal(run.id,input.recoveryConnectionId, update => {
+          const row = this.store.db.prepare('SELECT evidence_json FROM artifact_rehearsals WHERE id=?').get(runId) as any;
+          this.store.db.prepare('UPDATE artifact_rehearsals SET evidence_json=? WHERE id=?').run(JSON.stringify({...this.json(row.evidence_json),...update}),runId);
+        });
+        this.store.db.prepare('UPDATE artifact_rehearsals SET status=?,finished_at=?,evidence_json=? WHERE id=?').run(result.cleanupWarnings.length ? 'warning' : 'passed',this.store.now(),JSON.stringify({...evidence,...result,stage:'completed'}),runId);
+      } catch (error: any) {
+        this.store.db.prepare("UPDATE artifact_rehearsals SET status='failed',finished_at=?,error_message=? WHERE id=?").run(this.store.now(),String(error?.message || error).slice(0,1800),runId);
+      }
+    });
+    this.artifactWorkers.add(work);
+    void work.then(() => this.artifactWorkers.delete(work), () => this.artifactWorkers.delete(work));
+    return {runId};
+  }
+
+  getArtifactRehearsal(id: string) {
+    const row = this.store.db.prepare('SELECT * FROM artifact_rehearsals WHERE id=?').get(id) as any;
+    if (!row) throw new BadRequestException('Artifact rehearsal not found');
+    return {runId:row.id,backupRunId:row.backup_run_id,recoveryConnectionId:row.recovery_connection_id,status:row.status,startedAt:row.started_at,finishedAt:row.finished_at,evidence:this.json(row.evidence_json),errorMessage:row.error_message};
+  }
+
+  private assertRecoveryDestination(sourceId: string, destinationId: string) {
+    const source = this.store.db.prepare('SELECT * FROM database_connections WHERE id=?').get(sourceId) as any;
+    const destination = this.store.db.prepare('SELECT * FROM database_connections WHERE id=?').get(destinationId) as any;
+    if (!source || !destination || destination.connection_purpose !== 'recovery') throw new BadRequestException('Select a dedicated recovery-only connection');
+    const host = (value: any) => {
+      let name = String(value.host).trim().toLowerCase().replace(/\.$/,'').replace(/^\[|\]$/g,'');
+      if (name.includes(':')) { try { name = new URL(`http://[${name}]`).hostname.replace(/^\[|\]$/g,''); } catch {} }
+      if (['localhost','127.0.0.1','::1'].includes(name)) name = 'loopback';
+      return `${name}:${Number(value.port) || 3306}`;
+    };
+    if (source.id === destination.id || host(source) === host(destination) || (source.source_group_id && source.source_group_id === destination.source_group_id)) throw new BadRequestException('Recovery destination must be on a different source server/group');
+    if (source.engine !== destination.engine) throw new BadRequestException('Recovery engine must match the recorded source');
+  }
 
   listPlans() {
     this.store.assertEncryptionHealthy();
@@ -24,7 +81,7 @@ export class RecoveryService {
     if (!this.store.db.prepare('SELECT id FROM backup_jobs WHERE id=?').get(input.jobId)) throw new BadRequestException('Backup schedule not found');
     const destination = this.store.db.prepare('SELECT id,connection_purpose as purpose FROM database_connections WHERE id=?').get(destinationConnectionId) as any;
     if (!destination) throw new BadRequestException('Recovery destination database connection not found');
-    if (input.recoveryConnectionId && destination.purpose !== 'recovery') throw new BadRequestException('Select a dedicated recovery database connection');
+    if (destination.purpose !== 'recovery') throw new BadRequestException('Select a dedicated recovery database connection');
     const cronExpression = String(input.cronExpression || '0 4 * * 0');
     const timezone = String(input.timezone || 'UTC');
     const next = nextCron(cronExpression, new Date(), timezone).toISOString();
@@ -49,6 +106,7 @@ export class RecoveryService {
     if (!input.name || !input.host || !input.username) throw new BadRequestException('Name, host, and username are required');
     if (input.host === '0.0.0.0' || input.host === '::') throw new BadRequestException('Use the actual recovery database server address, not a bind address');
     const id = String(input.id || crypto.randomUUID());
+    this.assertNoArtifactWorker(id);
     const old = this.store.db.prepare("SELECT password_enc,connection_purpose FROM database_connections WHERE id=?").get(id) as any;
     if (old && old.connection_purpose !== 'recovery') throw new BadRequestException('That ID belongs to a normal backup connection');
     const password = typeof input.password === 'string' && input.password.length ? this.store.encrypt(input.password) : old?.password_enc || this.store.encrypt('');
@@ -61,10 +119,14 @@ export class RecoveryService {
   }
 
   deleteRecoveryConnection(id: string) {
+    this.assertNoArtifactWorker(id);
     const used = this.store.db.prepare('SELECT id FROM recovery_plans WHERE destination_connection_id=? LIMIT 1').get(id);
     if (used) throw new BadRequestException('This recovery server is used by a recovery plan. Delete or update the plan first.');
     this.store.db.prepare("DELETE FROM database_connections WHERE id=? AND connection_purpose='recovery'").run(id);
     return { ok: true };
+  }
+  private assertNoArtifactWorker(id: string) {
+    if (this.store.db.prepare("SELECT id FROM artifact_rehearsals WHERE recovery_connection_id=? AND status='running'").get(id)) throw new BadRequestException('Wait for the active artifact rehearsal before editing or deleting this connection');
   }
 
   async runTest(planId: string) {
@@ -74,6 +136,7 @@ export class RecoveryService {
     if (active) throw new BadRequestException('A recovery test is already running for this plan');
     const run = this.store.db.prepare(`SELECT r.* FROM backup_runs r WHERE r.job_id=? AND r.status='success' AND r.filename IS NOT NULL ORDER BY COALESCE(r.finished_at,r.started_at) DESC LIMIT 1`).get(plan.job_id) as any;
     if (!run) throw new BadRequestException('No completed backup is available for this schedule');
+    this.assertRecoveryDestination(String(run.database_connection_id || ''),String(plan.destination_connection_id));
     if (!run.storage_target_id) throw new BadRequestException('The selected historical run has no recorded storage target and cannot be tested safely');
     const target = this.storage.get(String(run.storage_target_id));
     const available = await this.storage.isAvailable(target, String(run.filename), run.storage_location ? String(run.storage_location) : undefined, run.storage_folder ? String(run.storage_folder) : '');

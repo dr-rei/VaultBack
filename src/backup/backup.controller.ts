@@ -15,6 +15,14 @@ import { SystemService } from '../system/system.service';
 @ApiCommonErrorResponses()
 export class BackupController {
   constructor(private readonly backups: BackupService, private readonly auth: AuthService, private readonly tools: ToolInstallerService, private readonly system: SystemService) {}
+  private withDisconnect<T>(req: FastifyRequest, operation: (signal?: AbortSignal) => Promise<T>): Promise<T> {
+    const socket = req.raw?.socket;
+    if (!socket) return operation();
+    const controller = new AbortController();
+    const abort = () => controller.abort(new Error('Client disconnected while awaiting execution completion'));
+    socket.once('close',abort);
+    return operation(controller.signal).finally(() => socket.removeListener('close',abort));
+  }
   @Get('dependencies/status')
   @ApiOperation({ summary: 'Check bundled database tool health and availability.' })
   @ApiExampleResponse(200, 'Bundled database tool diagnostics.', { ok: true, engines: [{ engine: 'mysql', client: { available: true, command: 'mysql' }, dump: { available: true, command: 'mysqldump' } }], checkedAt: '2026-08-03T07:30:00.000Z', installer: { supported: true, packages: [] } })
@@ -80,7 +88,7 @@ export class BackupController {
   @ApiParam({ name: 'id', description: 'Backup schedule ID.' })
   @ApiOperation({ summary: 'Run a backup schedule immediately.' })
   @ApiExampleResponse(201, 'Backup run started.', { id: 'run_01HXYZ123', jobId: 'job_01HXYZ123', status: 'running', startedAt: '2026-08-03T07:30:00.000Z' })
-  run(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.backups.runNow(id); }
+  run(@Req() req: FastifyRequest, @Param('id') id: string) { const session = this.auth.requireAdmin(req); return this.withDisconnect(req, signal => signal ? this.backups.runNow(id, { userId: session.user_id }, signal) : this.backups.runNow(id, { userId: session.user_id })); }
   @Get('processes')
   @ApiOperation({ summary: 'List live and recently completed backup processes.' })
   @ApiExampleResponse(200, 'Live and recent process state.', { items: [{ id: 'run_01HXYZ123', jobId: 'job_01HXYZ123', jobName: 'Nightly production backup', status: 'running', stage: 'dumping', startedAt: '2026-08-03T07:30:00.000Z', updatedAt: '2026-08-03T07:30:08.000Z', logs: ['Backup started', 'Dumping selected databases'] }], updatedAt: '2026-08-03T07:30:08.000Z' })
@@ -144,7 +152,7 @@ export class BackupController {
   @ApiParam({ name: 'id', description: 'Backup run ID.' })
   @ApiOperation({ summary: 'Retry a failed backup run.' })
   @ApiExampleResponse(201, 'Retry started.', { id: 'run_01HXYZ456', jobId: 'job_01HXYZ123', status: 'running', startedAt: '2026-08-03T07:35:00.000Z' })
-  retry(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.backups.retryRun(id); }
+  retry(@Req() req: FastifyRequest, @Param('id') id: string) { const session = this.auth.requireAdmin(req); return this.withDisconnect(req, signal => signal ? this.backups.retryRun(id, { userId: session.user_id }, signal) : this.backups.retryRun(id, { userId: session.user_id })); }
   @Get('runs/:id/verification')
   @ApiParam({ name: 'id', description: 'Backup run ID.' })
   @ApiOperation({ summary: 'Read backup verification results.' })

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Client } from 'basic-ftp';
 import { DeleteObjectsCommand, GetObjectCommand, GetObjectLockConfigurationCommand, HeadBucketCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
@@ -7,7 +8,7 @@ import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+import { pipeline, finished } from 'node:stream/promises';
 import { DatabaseService } from '../database/database.service';
 import { StorageTarget, StorageType } from '../types';
 import { ensureDirectory, isWithin } from '../backup/backup.utils';
@@ -28,6 +29,9 @@ class DownloadLimitTransform extends Transform {
 
 @Injectable()
 export class StorageService {
+  private readonly rotationConfirmed = new AsyncLocalStorage<(filename: string) => void>();
+  private readonly operationSignal = new AsyncLocalStorage<AbortSignal>();
+
   private activeDownloads = 0;
   private readonly downloadWaiters: Array<() => void> = [];
   constructor(private readonly store: DatabaseService, private readonly realtime: RealtimeService) {}
@@ -69,7 +73,9 @@ export class StorageService {
 
   delete(id: string) { this.store.db.prepare('DELETE FROM storage_targets WHERE id = ?').run(id); return { ok: true }; }
 
-  async upload(target: StorageTarget, localFile: string, filename: string, folder = '') {
+  async upload(target: StorageTarget, localFile: string, filename: string, folder = '', signal?: AbortSignal): Promise<{location:string}> {
+    if (signal) return this.operationSignal.run(signal, () => this.upload(target,localFile,filename,folder));
+    this.operationSignal.getStore()?.throwIfAborted();
     this.validateFilename(filename); this.validateFolder(folder);
     switch (target.type) {
       case 'local': return this.uploadLocal(target, localFile, filename, folder);
@@ -186,7 +192,10 @@ export class StorageService {
     return false;
   }
 
-  async rotate(target: StorageTarget, prefix: string, retentionCount: number, folder = ''): Promise<string[]> {
+  async rotate(target: StorageTarget, prefix: string, retentionCount: number, folder = '', signal?: AbortSignal, onRemoved?: (filename: string) => void): Promise<string[]> {
+    if (onRemoved) return this.rotationConfirmed.run(onRemoved, () => this.rotate(target,prefix,retentionCount,folder,signal));
+    if (signal) return this.operationSignal.run(signal, () => this.rotate(target,prefix,retentionCount,folder));
+    this.operationSignal.getStore()?.throwIfAborted();
     if (retentionCount < 1) return [];
     this.validateFolder(folder);
     if (target.type === 'local') {
@@ -202,8 +211,9 @@ export class StorageService {
       const removed: string[] = [];
       for (const file of files.slice(retentionCount)) {
         try {
+          this.operationSignal.getStore()?.throwIfAborted();
           fs.rmSync(path.join(dir, file), { force: true });
-          removed.push(file);
+          removed.push(file); this.rotationConfirmed.getStore()?.(file);
         } catch (error: any) {
           if (error?.code !== 'ENOENT') throw error;
         }
@@ -248,19 +258,19 @@ export class StorageService {
         freeBytes = Number(stat.bavail) * Number(stat.bsize);
       }
       const health = { targetId: target.id, status: 'healthy', message: result.message, latencyMs: Date.now() - started, checkedAt, freeBytes };
-      this.store.db.prepare(`INSERT INTO storage_health (target_id,status,message,latency_ms,checked_at) VALUES (?,?,?,?,?) ON CONFLICT(target_id) DO UPDATE SET status=excluded.status,message=excluded.message,latency_ms=excluded.latency_ms,checked_at=excluded.checked_at`).run(target.id, health.status, health.message, health.latencyMs, health.checkedAt);
+      this.store.db.prepare(`INSERT INTO storage_health (target_id,status,message,latency_ms,checked_at,free_bytes) VALUES (?,?,?,?,?,?) ON CONFLICT(target_id) DO UPDATE SET status=excluded.status,message=excluded.message,latency_ms=excluded.latency_ms,checked_at=excluded.checked_at,free_bytes=excluded.free_bytes`).run(target.id, health.status, health.message, health.latencyMs, health.checkedAt, health.freeBytes);
         this.realtime.publish('storage_health', this.healthSummary());
         return health;
     } catch (error: any) {
       const health = { targetId: target.id, status: 'unavailable', message: String(error?.message || error).slice(0, 500), latencyMs: Date.now() - started, checkedAt: this.store.now(), freeBytes: null };
-      this.store.db.prepare(`INSERT INTO storage_health (target_id,status,message,latency_ms,checked_at) VALUES (?,?,?,?,?) ON CONFLICT(target_id) DO UPDATE SET status=excluded.status,message=excluded.message,latency_ms=excluded.latency_ms,checked_at=excluded.checked_at`).run(target.id, health.status, health.message, health.latencyMs, health.checkedAt);
+      this.store.db.prepare(`INSERT INTO storage_health (target_id,status,message,latency_ms,checked_at,free_bytes) VALUES (?,?,?,?,?,?) ON CONFLICT(target_id) DO UPDATE SET status=excluded.status,message=excluded.message,latency_ms=excluded.latency_ms,checked_at=excluded.checked_at,free_bytes=excluded.free_bytes`).run(target.id, health.status, health.message, health.latencyMs, health.checkedAt, health.freeBytes);
         this.realtime.publish('storage_health', this.healthSummary());
         throw error;
     }
   }
 
   healthSummary() {
-    return this.store.db.prepare(`SELECT h.target_id as targetId,s.name,h.status,h.message,h.latency_ms as latencyMs,h.checked_at as checkedAt FROM storage_health h JOIN storage_targets s ON s.id=h.target_id ORDER BY s.name`).all();
+    return this.store.db.prepare(`SELECT h.target_id as targetId,s.name,h.status,h.message,h.latency_ms as latencyMs,h.checked_at as checkedAt,h.free_bytes as freeBytes FROM storage_health h JOIN storage_targets s ON s.id=h.target_id ORDER BY s.name`).all();
   }
 
   immutabilityStatus(targetId: string) {
@@ -277,17 +287,20 @@ export class StorageService {
   private rotationFiles<T extends { name: string }>(files: T[], prefix: string) { return files.filter(file => file.name.startsWith(prefix)).sort((left, right) => right.name.localeCompare(left.name)); }
   private async rotateFtp(target: StorageTarget, prefix: string, retentionCount: number, folder: string) {
     const client = new Client(30000);
+    const signal = this.operationSignal.getStore(); const abort = () => client.close();
+    signal?.addEventListener('abort',abort,{once:true});
     try {
+      signal?.throwIfAborted();
       await client.access(this.ftpConfig(target));
       let entries: any[];
       try { entries = await client.list(this.ftpRemoteDirectory(target, folder)); } catch (error) { if (this.isMissingRemote(error)) return []; throw error; }
       const files = this.rotationFiles(entries.filter(entry => entry.type === 1), prefix);
       const removed: string[] = [];
       for (const file of files.slice(retentionCount)) {
-        try { await client.remove(this.ftpRemotePath(target, file.name, folder)); removed.push(file.name); } catch (error) { if (!this.isMissingRemote(error)) throw error; }
+        try { this.operationSignal.getStore()?.throwIfAborted(); await client.remove(this.ftpRemotePath(target, file.name, folder)); removed.push(file.name); this.rotationConfirmed.getStore()?.(file.name); } catch (error) { if (!this.isMissingRemote(error)) throw error; }
       }
       return removed;
-    } finally { client.close(); }
+    } finally { signal?.removeEventListener('abort',abort); client.close(); }
   }
   private webdavRotationFiles(body: Buffer, base: string) {
     const xml = body.toString('utf8');
@@ -316,7 +329,7 @@ export class StorageService {
       try { deletion = await this.webdavRequest(target, this.webdavPath(base, folder, file.name), { method: 'DELETE', headers: this.webdavHeaders(target) }); } catch (error) { if (!this.isMissingRemote(error)) throw error; continue; }
       if ([404, 410].includes(deletion.status)) continue;
       if (deletion.status < 200 || deletion.status >= 300) throw new BadRequestException(`WebDAV could not delete an old backup (${deletion.status})`);
-      removed.push(file.name);
+      removed.push(file.name); this.rotationConfirmed.getStore()?.(file.name);
     }
     return removed;
   }
@@ -339,7 +352,7 @@ export class StorageService {
       const response = await this.googleDriveFetch(target, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}`, { method: 'DELETE' });
       if ([404, 410].includes(response.status)) continue;
       if (!response.ok) throw new Error(`Google Drive could not delete an old backup (${response.status})`);
-      removed.push(file.name);
+      removed.push(file.name); this.rotationConfirmed.getStore()?.(file.name);
     }
     return removed;
   }
@@ -361,7 +374,7 @@ export class StorageService {
       const response = await this.oneDriveFetch(target, `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(file.id)}`, { method: 'DELETE' });
       if ([404, 410].includes(response.status)) continue;
       if (!response.ok) throw new Error(`OneDrive could not delete an old backup (${response.status})`);
-      removed.push(file.name);
+      removed.push(file.name); this.rotationConfirmed.getStore()?.(file.name);
     }
     return removed;
   }
@@ -370,16 +383,16 @@ export class StorageService {
   private s3Bucket(target: StorageTarget) { return this.s3Config(target).bucket; }
   private s3Key(target: StorageTarget, filename: string, folder = '', location?: string) { const raw = String(location || '').replace(/^s3:\/\/[^/]+\/?/, ''); if (raw && raw !== String(location)) return raw; const c = this.s3Config(target); return [c.prefix, folder, filename].filter(Boolean).join('/'); }
   private async testS3(target: StorageTarget) { const config = this.s3Config(target); const client = this.s3Client(target); await client.send(new HeadBucketCommand({ Bucket: config.bucket })); if (config.objectLockRequired) { if (config.retentionDays < 1) throw new BadRequestException('Object Lock retention must be at least one day'); const result = await client.send(new GetObjectLockConfigurationCommand({ Bucket: config.bucket })); if (result.ObjectLockConfiguration?.ObjectLockEnabled !== 'Enabled') throw new BadRequestException('S3 Object Lock is required but is not enabled on this bucket. Object Lock must be enabled when the bucket is created; it cannot be added later.'); return { ok: true, immutable: true, message: `S3 connection succeeded; Object Lock is enabled with ${config.retentionDays}-day COMPLIANCE retention.` }; } return { ok: true, immutable: false, message: 'S3 connection succeeded, but Object Lock is not enabled; retention rotation can delete old objects.' }; }
-  private async uploadS3(target: StorageTarget, localFile: string, filename: string, folder: string) { const config = this.s3Config(target); const input: any = { Bucket: config.bucket, Key: this.s3Key(target, filename, folder), Body: fs.createReadStream(localFile), ContentType: 'application/octet-stream' }; if (config.objectLockRequired) { input.ObjectLockMode = 'COMPLIANCE'; input.ObjectLockRetainUntilDate = new Date(Date.now() + config.retentionDays * 86400000); input.ContentMD5 = await this.fileDigest(localFile, 'md5', 'base64'); } await this.s3Client(target).send(new PutObjectCommand(input)); return { location: `s3://${config.bucket}/${input.Key}` }; }
+  private async uploadS3(target: StorageTarget, localFile: string, filename: string, folder: string) { const config = this.s3Config(target); const input: any = { Bucket: config.bucket, Key: this.s3Key(target, filename, folder), ContentType: 'application/octet-stream' }; if (config.objectLockRequired) { input.ObjectLockMode = 'COMPLIANCE'; input.ObjectLockRetainUntilDate = new Date(Date.now() + config.retentionDays * 86400000); input.ContentMD5 = await this.fileDigest(localFile, 'md5', 'base64'); } this.operationSignal.getStore()?.throwIfAborted(); input.Body = fs.createReadStream(localFile); try { await this.s3Client(target).send(new PutObjectCommand(input), {abortSignal:this.operationSignal.getStore()}); } finally { input.Body.destroy(); await finished(input.Body).catch(() => undefined); } return { location: `s3://${config.bucket}/${input.Key}` }; }
   private async downloadS3(target: StorageTarget, filename: string, location: string | undefined, output: string, folder: string, progress: StorageDownloadProgress | undefined, maxBytes: number) { const config = this.s3Config(target); const result: any = await this.s3Client(target).send(new GetObjectCommand({ Bucket: config.bucket, Key: this.s3Key(target, filename, folder, location) })); if (!result.Body) throw new BadRequestException(`S3 returned no content for ${filename}`); const totalBytes = Number(result.ContentLength || 0) || undefined; if (totalBytes && totalBytes > maxBytes) throw new BadRequestException(`Backup download size ${totalBytes} exceeds available temporary storage`); const source: any = result.Body; await pipeline(source, new DownloadLimitTransform(maxBytes, progress, totalBytes), fs.createWriteStream(output, { mode: 0o600 })); progress?.({ bytesDownloaded: Number(totalBytes || fs.statSync(output).size), totalBytes }); }
-  private async rotateS3(target: StorageTarget, prefix: string, retentionCount: number, folder: string) { const config = this.s3Config(target); if (config.objectLockRequired) return []; const client = this.s3Client(target); const prefixKey = [config.prefix, folder, prefix].filter(Boolean).join('/'); const keys: string[] = []; let token: string | undefined; do { const result = await client.send(new ListObjectsV2Command({ Bucket: config.bucket, Prefix: prefixKey, ContinuationToken: token })); keys.push(...(result.Contents || []).map(item => String(item.Key || '')).filter(Boolean)); token = result.IsTruncated ? result.NextContinuationToken : undefined; } while (token); const removed: string[] = []; for (const key of keys.sort().reverse().slice(retentionCount)) { try { await client.send(new DeleteObjectsCommand({ Bucket: config.bucket, Delete: { Objects: [{ Key: key }], Quiet: true } })); removed.push(key.split('/').pop() || key); } catch (error) { if (!this.isMissingRemote(error)) throw error; } } return removed; }
+  private async rotateS3(target: StorageTarget, prefix: string, retentionCount: number, folder: string) { const config = this.s3Config(target); if (config.objectLockRequired) return []; const client = this.s3Client(target); const prefixKey = [config.prefix, folder, prefix].filter(Boolean).join('/'); const keys: string[] = []; let token: string | undefined; do { const result = await client.send(new ListObjectsV2Command({ Bucket: config.bucket, Prefix: prefixKey, ContinuationToken: token }),{abortSignal:this.operationSignal.getStore()}); keys.push(...(result.Contents || []).map(item => String(item.Key || '')).filter(Boolean)); token = result.IsTruncated ? result.NextContinuationToken : undefined; } while (token); const removed: string[] = []; for (const key of keys.sort().reverse().slice(retentionCount)) { try { this.operationSignal.getStore()?.throwIfAborted(); const deletion = await client.send(new DeleteObjectsCommand({ Bucket: config.bucket, Delete: { Objects: [{ Key: key }], Quiet: true } }),{abortSignal:this.operationSignal.getStore()}); if (deletion.Errors?.length) throw new Error('S3 did not acknowledge retention deletion'); removed.push(key.split('/').pop() || key); this.rotationConfirmed.getStore()?.(key.split('/').pop() || key); } catch (error) { if (!this.isMissingRemote(error)) throw error; } } return removed; }
   private uploadLocal(target: StorageTarget, localFile: string, filename: string, folder: string) { const dir = path.resolve(this.localDir(target), folder); if (!isWithin(this.localDir(target), dir)) throw new BadRequestException('Invalid local schedule backup folder'); ensureDirectory(dir); const destination = path.join(dir, filename); try { fs.copyFileSync(localFile, destination); } catch (error: any) { if (error?.code === 'ENOENT') throw new BadRequestException('The temporary backup file is no longer available to upload'); throw error; } return { location: destination }; }
   private localDir(target: StorageTarget) { const requested = String(target.config.path || ''); if (!requested) throw new Error('Local storage path is required'); const root = path.resolve(this.store.dataDir, 'backups'); const dir = path.resolve(requested); if (process.env.ALLOW_ANY_LOCAL_PATH !== 'true' && !isWithin(root, dir)) throw new Error(`Local paths must be inside ${root}`); return dir; }
   private ftpConfig(target: StorageTarget) { const c = target.config as any; return { host: String(c.host), port: Number(c.port || 21), user: String(c.username), password: String(c.password), secure: Boolean(c.secure) }; }
   private ftpRemoteDirectory(target: StorageTarget, folder = '') { const base = String((target.config as any).remotePath || '').replace(/\\/g, '/').replace(/\/$/, ''); return `${base}/${folder}`.replace(/\/+/g, '/') || '/'; }
   private ftpRemotePath(target: StorageTarget, filename: string, folder = '') { return `${this.ftpRemoteDirectory(target, folder).replace(/\/$/, '')}/${filename}`.replace(/^\//, '/'); }
-  private async uploadFtp(target: StorageTarget, localFile: string, filename: string, folder: string) { const c = new Client(30000); try { await c.access(this.ftpConfig(target)); const remote = this.ftpRemotePath(target, filename, folder); if (folder) { await c.ensureDir(this.ftpRemoteDirectory(target, folder)); await c.uploadFrom(localFile, filename); } else await c.uploadFrom(localFile, remote); return { location: `ftp://${(target.config as any).host}${remote}` }; } finally { c.close(); } }
-  private async downloadFtp(target: StorageTarget, filename: string, output: string, folder: string, progress: StorageDownloadProgress | undefined, maxBytes: number) { const c = new Client(30000); try { await c.access(this.ftpConfig(target)); const remote = this.ftpRemotePath(target, filename, folder); let totalBytes: number | undefined; try { totalBytes = await c.size(remote); } catch {} if (totalBytes && totalBytes > maxBytes) throw new BadRequestException(`Backup download size ${totalBytes} exceeds available temporary storage`); const { limiter, writing } = this.boundedWriter(output, maxBytes, progress, totalBytes); if (progress) c.trackProgress(info => progress({ bytesDownloaded: Number(info.bytesOverall || info.bytes || 0), totalBytes })); try { await Promise.all([c.downloadTo(limiter, remote), writing]); } catch (error) { limiter.destroy(error as Error); throw error; } if (progress) progress({ bytesDownloaded: totalBytes || Number(fs.statSync(output).size), totalBytes }); } finally { c.trackProgress(); c.close(); } }
+  private async uploadFtp(target: StorageTarget, localFile: string, filename: string, folder: string) { const c = new Client(30000); const signal = this.operationSignal.getStore(); const abort = () => c.close(); signal?.addEventListener('abort',abort,{once:true}); try { signal?.throwIfAborted(); await c.access(this.ftpConfig(target)); const remote = this.ftpRemotePath(target, filename, folder); if (folder) { await c.ensureDir(this.ftpRemoteDirectory(target, folder)); await c.uploadFrom(localFile, filename); } else await c.uploadFrom(localFile, remote); return { location: `ftp://${(target.config as any).host}${remote}` }; } finally { signal?.removeEventListener('abort',abort); c.close(); } }
+  private async downloadFtp(target: StorageTarget, filename: string, output: string, folder: string, progress: StorageDownloadProgress | undefined, maxBytes: number) { const c = new Client(30000); const signal = this.operationSignal.getStore(); const abort = () => c.close(); signal?.addEventListener('abort',abort,{once:true}); try { signal?.throwIfAborted(); await c.access(this.ftpConfig(target)); const remote = this.ftpRemotePath(target, filename, folder); let totalBytes: number | undefined; try { totalBytes = await c.size(remote); } catch {} if (totalBytes && totalBytes > maxBytes) throw new BadRequestException(`Backup download size ${totalBytes} exceeds available temporary storage`); const { limiter, writing } = this.boundedWriter(output, maxBytes, progress, totalBytes); if (progress) c.trackProgress(info => progress({ bytesDownloaded: Number(info.bytesOverall || info.bytes || 0), totalBytes })); try { await Promise.all([c.downloadTo(limiter, remote), writing]); } catch (error) { limiter.destroy(error as Error); throw error; } if (progress) progress({ bytesDownloaded: totalBytes || Number(fs.statSync(output).size), totalBytes }); } finally { c.trackProgress(); c.close(); } }
   private webdavHeaders(target: StorageTarget) { const c = target.config as any; const token = c.token ? `Bearer ${c.token}` : `Basic ${Buffer.from(`${c.username || ''}:${c.password || ''}`).toString('base64')}`; return { Authorization: token }; }
   private webdavUrl(target: StorageTarget, rawUrl: string) {
     let parsed: URL;
@@ -397,7 +410,9 @@ export class StorageService {
     if (typeof options.body === 'string') headers['Content-Length'] = String(Buffer.byteLength(options.body));
     try {
       return await new Promise<{ status: number; body?: Buffer }>((resolve, reject) => {
+        this.operationSignal.getStore()?.throwIfAborted();
         const request = transport.request({
+          signal: this.operationSignal.getStore(),
           protocol: parsed.protocol,
           hostname: parsed.hostname,
           port: parsed.port || undefined,
@@ -428,6 +443,8 @@ export class StorageService {
       });
     } catch (error) {
       throw this.webdavConnectionError(error, parsed, Boolean(config.allowSelfSigned));
+    } finally {
+      if (options.body && typeof options.body !== 'string') { options.body.destroy(); await finished(options.body).catch(() => undefined); }
     }
   }
   private webdavConnectionError(error: unknown, parsed: URL, allowSelfSigned: boolean) {
@@ -447,14 +464,14 @@ export class StorageService {
   private async ensureWebdavFolder(target: StorageTarget, base: string, folder: string) { if (!folder) return; const response = await this.webdavRequest(target, this.webdavPath(base, folder), { method: 'MKCOL', headers: this.webdavHeaders(target) }); if ((response.status < 200 || response.status >= 300) && response.status !== 405) throw new BadRequestException(`WebDAV could not create the schedule folder (${response.status})`); }
   private async uploadWebdav(target: StorageTarget, localFile: string, filename: string, folder: string) { const c = target.config as any; const base = String(c.url).replace(/\/$/, ''); await this.ensureWebdavFolder(target, base, folder); const response = await this.webdavRequest(target, this.webdavPath(base, folder, filename), { method: 'PUT', headers: { ...this.webdavHeaders(target), 'Content-Type': 'application/octet-stream' }, body: fs.createReadStream(localFile) }); if (response.status < 200 || response.status >= 300) throw new BadRequestException(`WebDAV upload returned ${response.status}`); return { location: this.webdavPath(base, folder, filename) }; }
   private async downloadWebdav(target: StorageTarget, filename: string, output: string, folder: string, progress: StorageDownloadProgress | undefined, maxBytes: number) { const c = target.config as any; const base = String(c.url).replace(/\/$/, ''); const response = await this.webdavRequest(target, this.webdavPath(base, folder, filename), { method: 'GET', headers: this.webdavHeaders(target), output, progress, maxBytes }); if (response.status < 200 || response.status >= 300) { fs.rmSync(output, { force: true }); throw new BadRequestException(`WebDAV download returned ${response.status}`); } }
-  private async googleDriveFetch(target: StorageTarget, url: string, init: RequestInit = {}, retry = true) { const c = target.config as any; const headers = { ...(init.headers || {}), Authorization: `Bearer ${await this.accessToken(target, 'google-drive', false)}` }; let response = await fetch(url, { ...init, headers }); if (response.status === 401 && retry && c.refreshToken) { headers.Authorization = `Bearer ${await this.accessToken(target, 'google-drive', true)}`; response = await fetch(url, { ...init, headers }); } return response; }
+  private async googleDriveFetch(target: StorageTarget, url: string, init: RequestInit = {}, retry = true) { const c = target.config as any; const headers = { ...(init.headers || {}), Authorization: `Bearer ${await this.accessToken(target, 'google-drive', false)}` }; let response = await fetch(url, { ...init, headers, signal:this.operationSignal.getStore() }); if (response.status === 401 && retry && c.refreshToken) { headers.Authorization = `Bearer ${await this.accessToken(target, 'google-drive', true)}`; response = await fetch(url, { ...init, headers, signal:this.operationSignal.getStore() }); } return response; }
   private driveQueryValue(value: string) { return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
   private async ensureGoogleDriveFolder(target: StorageTarget, folder: string) { const c = target.config as any; const parent = String(c.folderId || ''); const query = [`name='${this.driveQueryValue(folder)}'`, "mimeType='application/vnd.google-apps.folder'", 'trashed=false', ...(parent ? [`'${this.driveQueryValue(parent)}' in parents`] : [])].join(' and '); const list = await this.googleDriveFetch(target, `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&pageSize=1&fields=files(id)`); if (!list.ok) throw new Error(`Google Drive folder lookup returned ${list.status}`); const files = await list.json() as any; if (files.files?.[0]?.id) return String(files.files[0].id); const response = await this.googleDriveFetch(target, 'https://www.googleapis.com/drive/v3/files', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: folder, mimeType: 'application/vnd.google-apps.folder', ...(parent ? { parents: [parent] } : {}) }) }); if (!response.ok) throw new Error(`Google Drive folder creation returned ${response.status}`); const created = await response.json() as any; return String(created.id); }
   private async uploadGoogleDrive(target: StorageTarget, localFile: string, filename: string, folder: string) {
     const c = target.config as any; const content = fs.readFileSync(localFile); const send = async (token: string) => {
       const boundary = `vaultback-${crypto.randomUUID()}`; const parent = folder ? await this.ensureGoogleDriveFolder(target, folder) : String(c.folderId || ''); const metadata = JSON.stringify({ name: filename, parents: parent ? [parent] : undefined });
       const body = Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n--${boundary}\r\nContent-Type: application/octet-stream\r\n\r\n`), content, Buffer.from(`\r\n--${boundary}--`) ]);
-      return fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` }, body });
+      return fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { signal:this.operationSignal.getStore(), method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` }, body });
     };
     let response = await send(await this.accessToken(target, 'google-drive'));
     if (response.status === 401 && c.refreshToken) response = await send(await this.accessToken(target, 'google-drive', true));
@@ -462,7 +479,7 @@ export class StorageService {
     const result = await response.json() as any; return { location: `gdrive://${result.id}` };
   }
   private graphPath(value: string) { const parts = String(value || '').split(/[\\/]+/).filter(Boolean).map(part => encodeURIComponent(part)); return parts.length ? `root:/${parts.join('/')}:` : 'root'; }
-  private async oneDriveFetch(target: StorageTarget, url: string, init: RequestInit = {}, retry = true) { const c = target.config as any; const headers = { ...(init.headers || {}), Authorization: `Bearer ${await this.accessToken(target, 'onedrive', false)}` }; let response = await fetch(url, { ...init, headers }); if (response.status === 401 && retry && c.refreshToken) { headers.Authorization = `Bearer ${await this.accessToken(target, 'onedrive', true)}`; response = await fetch(url, { ...init, headers }); } return response; }
+  private async oneDriveFetch(target: StorageTarget, url: string, init: RequestInit = {}, retry = true) { const c = target.config as any; const headers = { ...(init.headers || {}), Authorization: `Bearer ${await this.accessToken(target, 'onedrive', false)}` }; let response = await fetch(url, { ...init, headers, signal:this.operationSignal.getStore() }); if (response.status === 401 && retry && c.refreshToken) { headers.Authorization = `Bearer ${await this.accessToken(target, 'onedrive', true)}`; response = await fetch(url, { ...init, headers, signal:this.operationSignal.getStore() }); } return response; }
   private async ensureOneDriveFolder(target: StorageTarget, folder: string) { const base = String((target.config as any).remotePath || '').replace(/^\/+|\/+$/g, ''); const endpoint = `https://graph.microsoft.com/v1.0/me/drive/${this.graphPath(base)}/children`; const response = await this.oneDriveFetch(target, endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: folder, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }) }); if (!response.ok && response.status !== 409) throw new Error(`OneDrive schedule folder creation returned ${response.status}`); }
   private async uploadOneDrive(target: StorageTarget, localFile: string, filename: string, folder: string) {
     const c = target.config as any; const content = fs.readFileSync(localFile); if (folder) await this.ensureOneDriveFolder(target, folder); const remotePath = [String(c.remotePath || '').replace(/^\/+|\/+$/g, ''), folder, filename].filter(Boolean).join('/');
@@ -482,13 +499,13 @@ export class StorageService {
       : `https://login.microsoftonline.com/${encodeURIComponent(String(c.tenantId || 'common'))}/oauth2/v2.0/token`;
     const params = new URLSearchParams({ client_id: String(c.clientId), client_secret: String(c.clientSecret), refresh_token: String(c.refreshToken), grant_type: 'refresh_token' });
     if (provider === 'onedrive') params.set('scope', 'https://graph.microsoft.com/.default offline_access');
-    const response = await fetch(tokenUrl, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: params });
+    const response = await fetch(tokenUrl, { signal:this.operationSignal.getStore(), method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: params });
     if (!response.ok) throw new Error(`${provider === 'google-drive' ? 'Google' : 'Microsoft'} OAuth token refresh returned ${response.status}`);
     const result = await response.json() as any; if (!result.access_token) throw new Error('OAuth provider did not return an access token');
     c.accessToken = result.access_token; if (result.refresh_token) c.refreshToken = result.refresh_token;
     this.store.db.prepare('UPDATE storage_targets SET config_enc=? WHERE id=?').run(this.store.encrypt(c), target.id); target.config = c;
     return String(c.accessToken);
   }
-  private async fileDigest(file: string, algorithm: 'md5' | 'sha256', encoding: crypto.BinaryToTextEncoding) { const hash = crypto.createHash(algorithm); for await (const chunk of fs.createReadStream(file)) hash.update(chunk); return hash.digest(encoding); }
+  private async fileDigest(file: string, algorithm: 'md5' | 'sha256', encoding: crypto.BinaryToTextEncoding) { const hash = crypto.createHash(algorithm); for await (const chunk of fs.createReadStream(file)) { this.operationSignal.getStore()?.throwIfAborted(); hash.update(chunk); } return hash.digest(encoding); }
   private redact(config: Record<string, unknown>) { const copy = { ...config }; for (const key of ['password', 'token', 'accessToken', 'refreshToken', 'clientSecret', 'webhookToken', 'botToken', 'accessKeyId', 'secretAccessKey']) delete copy[key]; return copy; }
 }

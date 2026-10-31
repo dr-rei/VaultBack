@@ -7,7 +7,7 @@ import { configuredEnvValue, environmentName, isProductionEnvironment, rateLimit
 import { DatabaseService } from '../database/database.service';
 import { RealtimeService } from './realtime.service';
 
-export type NotificationEvent = 'backup_success' | 'backup_failed' | 'backup_retry' | 'backup_stale' | 'storage_failed' | 'capacity_warning';
+export type NotificationEvent = 'backup_recovered' | 'backup_missed_start' | 'backup_long_running' | 'backup_success' | 'backup_failed' | 'backup_retry' | 'backup_stale' | 'storage_failed' | 'capacity_warning';
 
 type ReleaseArtifact = { url: string; sha256: string; bytes?: number };
 type ReleaseSummary = { version: string; releaseNotesUrl?: string; publishedAt?: string };
@@ -79,7 +79,7 @@ export class SystemService {
 
   getNotificationSettings() {
     const config = this.readSetting<any>('notification_settings', { enabled: false, provider: 'discord', webhookUrl: '', botToken: '', chatId: '', events: { backup_success: false, backup_failed: true, backup_retry: true, backup_stale: true, storage_failed: true, capacity_warning: true } });
-    return { enabled: Boolean(config.enabled), provider: config.provider || 'discord', webhookConfigured: Boolean(config.webhookUrl || config.botToken), events: config.events || {} };
+    return { enabled: Boolean(config.enabled), provider: config.provider || 'discord', webhookConfigured: Boolean(config.webhookUrl || config.botToken), events: { backup_success: false, backup_recovered: true, backup_missed_start: true, backup_long_running: true, backup_failed: true, backup_retry: true, backup_stale: true, storage_failed: true, capacity_warning: true, ...config.events } };
   }
 
   saveNotificationSettings(input: any) {
@@ -88,26 +88,33 @@ export class SystemService {
     if (input.enabled && provider === 'telegram' && (!input.botToken || !input.chatId)) throw new BadRequestException('Telegram bot token and chat ID are required');
     const old = this.readSetting<any>('notification_settings', {});
     const secret = (next: unknown, previous: unknown) => String(next || '').trim() || String(previous || '');
-    const value = { enabled: Boolean(input.enabled), provider, webhookUrl: String(input.webhookUrl || '').trim(), webhookToken: secret(input.webhookToken, old.webhookToken), botToken: secret(input.botToken, old.botToken), chatId: String(input.chatId || '').trim(), events: { backup_success: Boolean(input.events?.backup_success), backup_failed: input.events?.backup_failed !== false, backup_retry: input.events?.backup_retry !== false, backup_stale: input.events?.backup_stale !== false, storage_failed: input.events?.storage_failed !== false, capacity_warning: input.events?.capacity_warning !== false } };
+    const eventEnabled = (event: NotificationEvent, fallback = true) => input.events?.[event] === undefined ? (old.events?.[event] === undefined ? fallback : Boolean(old.events[event])) : Boolean(input.events[event]);
+    const value = { enabled: Boolean(input.enabled), provider, webhookUrl: String(input.webhookUrl || '').trim(), webhookToken: secret(input.webhookToken, old.webhookToken), botToken: secret(input.botToken, old.botToken), chatId: String(input.chatId || '').trim(), events: { backup_recovered: eventEnabled('backup_recovered'), backup_missed_start: eventEnabled('backup_missed_start'), backup_long_running: eventEnabled('backup_long_running'), backup_success: eventEnabled('backup_success', false), backup_failed: eventEnabled('backup_failed'), backup_retry: eventEnabled('backup_retry'), backup_stale: eventEnabled('backup_stale'), storage_failed: eventEnabled('storage_failed'), capacity_warning: eventEnabled('capacity_warning') } };
     this.writeSetting('notification_settings', value);
     return this.getNotificationSettings();
   }
 
-  async notify(event: NotificationEvent, message: string) {
+  notificationEnabled(event: NotificationEvent): boolean {
+    const config = this.getNotificationSettings();
+    return config.enabled && config.events[event] !== false;
+  }
+
+  async sendNotification(event: NotificationEvent, message: string): Promise<void> {
+    if (!this.notificationEnabled(event)) return;
     const config = this.readSetting<any>('notification_settings', {});
-    if (!config.enabled || config.events?.[event] === false) return;
-    try {
-      if (config.provider === 'telegram') {
-        await fetch(`https://api.telegram.org/bot${encodeURIComponent(config.botToken)}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: config.chatId, text: message }) });
-        return;
-      }
-      const body = config.provider === 'discord' ? { content: message } : { event, message, service: 'vaultback' };
-      const headers: Record<string, string> = { 'content-type': 'application/json' };
-      if (config.webhookToken) headers.authorization = `Bearer ${config.webhookToken}`;
-      await fetch(String(config.webhookUrl), { method: 'POST', headers, body: JSON.stringify(body) });
-    } catch (error: any) {
-      this.logger.warn(`Notification delivery failed: ${String(error?.message || error).slice(0, 240)}`);
-    }
+    const telegram = config.provider === 'telegram';
+    message = message.slice(0,telegram ? 4096 : config.provider === 'discord' ? 2000 : 8000);
+    const url = telegram ? `https://api.telegram.org/bot${encodeURIComponent(config.botToken)}/sendMessage` : String(config.webhookUrl);
+    const body = telegram ? { chat_id: config.chatId, text: message } : config.provider === 'discord' ? { content: message } : { event, message, service: 'vaultback' };
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (!telegram && config.webhookToken) headers.authorization = `Bearer ${config.webhookToken}`;
+    const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw new Error(`Notification provider returned HTTP ${response.status}`);
+  }
+
+  async notify(event: NotificationEvent, message: string) {
+    try { await this.sendNotification(event,message); }
+    catch { this.logger.warn('Notification delivery failed'); }
   }
 
   capacity() {

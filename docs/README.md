@@ -5,5 +5,7 @@ This directory contains deployment and usage documents that are separate from th
 - [aaPanel and PM2 deployment](AA_PANEL.md)
 - [Versioned releases and in-app updates](RELEASES.md)
 - [Terms of use](TERMS_OF_USE.md)
+- [Operations overview, queue and protection evidence](OPERATIONS_OVERVIEW.md)
+- [Recovery Assurance and rehearsal limits](RECOVERY_ASSURANCE.md)
 
 The main [README](../README.md) covers installation, configuration, operation, backup storage, restore behavior, and troubleshooting. The `tools/README.md` file remains next to the portable database-client layout because it documents that directory specifically.

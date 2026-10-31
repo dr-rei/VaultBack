@@ -3,7 +3,7 @@ import { FastifyRequest } from 'fastify';
 import { ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiCommonErrorResponses, ApiExampleResponse } from '../common/swagger-responses';
 import { AuthService } from '../auth/auth.service';
-import { RecoveryPlanDto, RecoveryConnectionDto, FleetEnrollmentDto, PitrCaptureDto, PitrConfigurationDto, PitrRehearsalDto } from '../common/request-dtos';
+import { ArtifactRehearsalDto, RecoveryPlanDto, RecoveryConnectionDto, FleetEnrollmentDto, PitrCaptureDto, PitrConfigurationDto, PitrRehearsalDto } from '../common/request-dtos';
 import { RecoveryService } from './recovery.service';
 
 @Controller('api/recovery')
@@ -12,6 +12,10 @@ import { RecoveryService } from './recovery.service';
 @ApiCommonErrorResponses()
 export class RecoveryController {
   constructor(private readonly auth: AuthService, private readonly recovery: RecoveryService) {}
+  @Post('rehearsals')
+  rehearseArtifact(@Req() req: FastifyRequest, @Body() body: ArtifactRehearsalDto) { const session = this.auth.requireAdmin(req); return this.recovery.rehearseArtifact(body,{userId:session.user_id}); }
+  @Get('rehearsals/:id')
+  artifactRehearsal(@Req() req: FastifyRequest, @Param('id') id: string) { this.auth.requireAdmin(req); return this.recovery.getArtifactRehearsal(id); }
   @Get('dashboard')
   @ApiOperation({ summary: 'Read recovery assurance, policy findings, PITR status, and recent tests.' })
   @ApiExampleResponse(200, 'Recovery assurance dashboard.', { plans: [], tests: [], policy: { summary: { critical: 0, high: 0, medium: 1, ready: 0 }, items: [] }, pitr: { checkedAt: '2026-08-18T04:00:00.000Z', items: [] } })

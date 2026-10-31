@@ -1,4 +1,4 @@
-const state = { csrf: '', userId: '', isPrimary: false, version: '', connections: [], recoveryConnections: [], storage: [], storageHealth: [], jobs: [], pageData: { connections: [], storage: [], jobs: [], runs: [] }, dashboard: { runs: [], runsMeta: {} }, backupActivity: null, recovery: null, processes: [], sessions: [], sessionInfo: null, audit: { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }, currentView: 'dashboard', dependencies: null, toolDiagnostics: null, toolDiagnosticsLoadedAt: 0, encryption: null, role: 'viewer', capacity: [], setupStatus: null, notifications: null, environment: null, update: null, users: [], list: { connections: { page: 1, pageSize: 25, search: '' }, storage: { page: 1, pageSize: 25, search: '' }, jobs: { page: 1, pageSize: 25, search: '' }, runs: { page: 1, pageSize: 25, search: '', status: '' }, users: { page: 1, pageSize: 25, search: '' }, sessions: { page: 1, pageSize: 25 } }, meta: {} };
+const state = { csrf: '', userId: '', isPrimary: false, version: '', connections: [], recoveryConnections: [], storage: [], storageHealth: [], jobs: [], pageData: { connections: [], storage: [], jobs: [], runs: [] }, dashboard: { runs: [], runsMeta: {} }, backupActivity: null, operationsProcessesAt: null, recovery: null, processes: [], sessions: [], sessionInfo: null, audit: { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }, currentView: 'dashboard', dependencies: null, toolDiagnostics: null, toolDiagnosticsLoadedAt: 0, encryption: null, role: 'viewer', capacity: [], setupStatus: null, notifications: null, environment: null, update: null, users: [], list: { connections: { page: 1, pageSize: 25, search: '' }, storage: { page: 1, pageSize: 25, search: '' }, jobs: { page: 1, pageSize: 25, search: '' }, runs: { page: 1, pageSize: 25, search: '', status: '' }, users: { page: 1, pageSize: 25, search: '' }, sessions: { page: 1, pageSize: 25 } }, meta: {} };
 let liveProcessTimer = null;
 var updateCheckTimer = null;
 var updateCheckInFlight = false;
@@ -205,7 +205,7 @@ async function repairDependencyTools(){
 function bindDependencyToolsControls(){if(document.body.dataset.dependencyToolsBound)return;document.body.dataset.dependencyToolsBound='1';$('#refresh-dependency-tools')?.addEventListener('click',()=>void withButtonBusy($('#refresh-dependency-tools'),()=>loadDependencyDiagnostics(true),'Refreshing…'));$('#repair-dependency-tools')?.addEventListener('click',()=>void repairDependencyTools())}
 async function openDependencySetup(){if(state.role!=='admin')return toast('Only an administrator can install database tools',true);if($('#dependency-setup-modal'))return;let installer;try{installer=await api('/api/dependencies')}catch(e){return toast(e.message,true)}const pkg=installer.installer?.packages?.[0];const root=$('#modal-root');if(!root)return;if(!installer.installer?.supported||!pkg){root.insertAdjacentHTML('beforeend',`<section id="dependency-setup-modal" class="dependency-setup-modal" role="dialog" aria-modal="true" aria-labelledby="dependency-setup-title"><div class="dependency-setup-card"><button type="button" class="modal-close" aria-label="Close tool setup" onclick="closeDependencySetup()">×</button><span class="kicker">FIRST-TIME SETUP</span><h2 id="dependency-setup-title">Database tools</h2><p>Automatic downloads are not available for this server platform. Use the manual portable-tool instructions in the setup guide.</p><div class="callout dependency-warning">Supported automatic packages currently cover Windows x64 and Linux x64. Existing system tools and configured binary paths remain supported.</div><div class="form-actions"><button type="button" class="secondary" onclick="closeDependencySetup()">Close</button></div></div></section>`);document.body.classList.add('modal-open');return}root.insertAdjacentHTML('beforeend',`<section id="dependency-setup-modal" class="dependency-setup-modal" role="dialog" aria-modal="true" aria-labelledby="dependency-setup-title"><div class="dependency-setup-card"><button type="button" class="modal-close" aria-label="Close tool setup" onclick="closeDependencySetup()">×</button><span class="kicker">FIRST-TIME SETUP</span><h2 id="dependency-setup-title">Prepare database tools</h2><p>VaultBack can download the official MariaDB community client pack and use its compatible client and dump tools for both MySQL and MariaDB connections.</p><div class="dependency-package-card"><div><b>MariaDB ${esc(pkg.version)} portable client pack</b><small>Official source: ${esc(pkg.source||'MariaDB archive')}</small></div><span class="tag">Verified download</span></div><div class="callout">Only the command-line client tools are installed. No database server is installed, and your credentials are not sent to MariaDB.</div><div id="dependency-install-status" aria-live="polite"><div class="dependency-install-status"><div class="dependency-install-status-head"><b>Ready to download</b><span>Not started</span></div></div></div><div class="form-actions"><button type="button" class="secondary" onclick="closeDependencySetup()">Close</button><button type="button" class="primary" id="start-dependency-install">Download and install</button></div></div></section>`);document.body.classList.add('modal-open');const start=$('#start-dependency-install');const status=$('#dependency-install-status');start.onclick=async()=>{start.disabled=true;try{let job=await api('/api/dependencies/install',{method:'POST',body:JSON.stringify({})});status.innerHTML=dependencyInstallMarkup(job);while(!['completed','failed'].includes(job.state)){await new Promise(resolve=>setTimeout(resolve,900));job=await api(`/api/dependencies/install/${encodeURIComponent(job.id)}`);status.innerHTML=dependencyInstallMarkup(job)}if(job.state==='completed'){await loadHealthDetails();toast('Database tools are ready')}else start.disabled=false}catch(e){status.innerHTML=`<div class="callout dependency-warning">${esc(e.message)}</div>`;start.disabled=false}}}
 function storageDescription(s){const c=s.config||{};return s.type==='local'?c.path||'Local path':s.type==='ftp'?`${c.host||'FTP host'} · ${c.remotePath||'/'}`:s.type==='webdav'?c.url||'WebDAV URL':s.type==='google-drive'?'Google Drive folder':s.type==='s3'?`S3 · ${c.bucket||'bucket'}${c.objectLockRequired?' · Object Lock':''}`:`OneDrive · ${c.remotePath||'root'}`}
-function field(label,name,value='',type='text',extra=''){return `<div class="field"><label>${label}</label><input name="${name}" type="${type}" value="${esc(value)}" ${extra}/></div>`}
+function field(label,name,value='',type='text',extra=''){return `<div class="field"><label for="field-${esc(name)}">${label}</label><input id="field-${esc(name)}" name="${name}" type="${type}" value="${esc(value)}" ${extra}/></div>`}
 function authPasswordField(extra='') { return `<div class="field password-field"><label for="auth-password">Password</label><div class="password-input-wrap"><input id="auth-password" name="password" type="password" ${extra}/><button type="button" class="password-toggle" id="auth-password-toggle" aria-label="Show password" aria-pressed="false" title="Show password"><span aria-hidden="true">&#128065;</span></button></div></div>`; }
 function initializeAuthPasswordToggle() {
   const input = $('#auth-password');
@@ -220,7 +220,7 @@ function initializeAuthPasswordToggle() {
     toggle.title = label;
   };
 }
-function selectField(label,name,options,value=''){return `<div class="field"><label>${label}</label><select name="${name}">${options.map(o=>`<option value="${esc(o[0])}" ${o[0]===value?'selected':''}>${esc(o[1])}</option>`).join('')}</select></div>`}
+function selectField(label,name,options,value=''){return `<div class="field"><label for="field-${esc(name)}">${label}</label><select id="field-${esc(name)}" name="${name}">${options.map(o=>`<option value="${esc(o[0])}" ${o[0]===value?'selected':''}>${esc(o[1])}</option>`).join('')}</select></div>`}
 async function deleteConnection(id){if(!await confirmAction('Delete this database and all schedules that use it?','Delete database connection'))return;const button=document.querySelector(`button[onclick="deleteConnection('${id}')"]`);try{await withButtonBusy(button,async()=>{await api(`/api/connections/${id}`,{method:'DELETE'});await loadAll();toast('Database deleted')},'Deleting…')}catch(e){toast(e.message,true)}}
 async function deleteStorage(id){if(!await confirmAction('Delete this storage target and all schedules that use it?','Delete storage target'))return;const button=document.querySelector(`button[onclick="deleteStorage('${id}')"]`);try{await withButtonBusy(button,async()=>{await api(`/api/storage/${id}`,{method:'DELETE'});await loadAll();toast('Storage target deleted')},'Deleting…')}catch(e){toast(e.message,true)}}
 async function deleteJob(id){if(!await confirmAction('Delete this schedule and its backup run history?','Delete schedule'))return;const button=document.querySelector(`button[onclick="deleteJob('${id}')"]`);try{await withButtonBusy(button,async()=>{await api(`/api/jobs/${id}`,{method:'DELETE'});await loadAll();toast('Schedule deleted')},'Deleting…')}catch(e){toast(e.message,true)}}
@@ -242,18 +242,24 @@ function realtimeJson(event) {
 function connectRealtime() {
   if (!state.csrf || !window.EventSource) return;
   closeRealtime();
-  const topics = 'processes,backup_runs,sessions,rate_limit,updates,storage_health,downloads,recovery_tests,pitr_rehearsals';
+  const topics = 'processes,backup_runs,sessions,rate_limit,updates,storage_health,downloads,recovery_tests,pitr_rehearsals,executions,protection' + (state.role==='admin'?',notification_deliveries':'');
   const sessionsOptions = state.list.sessions || { page: 1, pageSize: 25 };
   const usageOptions = state.list.apiUsage || { page: 1, pageSize: 25 };
   const query = new URLSearchParams({ topics, sessionPage: String(sessionsOptions.page || 1), sessionPageSize: String(sessionsOptions.pageSize || 25), ratePage: String(usageOptions.page || 1), ratePageSize: String(usageOptions.pageSize || 25) });
   const source = new EventSource(`/api/events?${query}`, { withCredentials: true });
   realtimeSource = source;
+  source.addEventListener('executions',()=>{void loadExecutions();void loadActiveExecutions();void refreshExecutionDetail();});
+  source.addEventListener('protection',event=>{const payload=realtimeJson(event);if(Array.isArray(payload)){executionUi.protection=payload;renderProtection();}});
+  source.addEventListener('notification_deliveries',()=>{if(state.role==='admin')void loadNotificationDeliveries();});
+  source.addEventListener('error', () => { state.operationsProcessesAt = null; renderOverviewOperations(); });
   source.addEventListener('processes', event => {
     const payload = realtimeJson(event);
     if (!payload || !Array.isArray(payload.items)) return;
     state.processes = payload.items;
+    state.operationsProcessesAt = Date.now();
     renderProcesses();
     renderProcessIndicator();
+    renderOverviewOperations();
     const active = state.processes.filter(item => item.status === 'running').length;
     const status = active ? `${active} active · live updates` : 'Live updates';
     if ($('#process-live-status')) $('#process-live-status').innerHTML = `<span class="live-dot"></span> ${status}`;
@@ -283,6 +289,7 @@ function connectRealtime() {
     const payload = realtimeJson(event);
     if (!Array.isArray(payload)) return;
     state.storageHealth = payload;
+    renderOverviewOperations();
     if (state.currentView === 'storage') renderStorage();
   });
   source.addEventListener('backup_runs', () => {
@@ -405,7 +412,7 @@ function showAuth(setup){
   $('#auth-form').addEventListener('input',()=>{const feedback=$('#auth-feedback');if(feedback){feedback.hidden=true;feedback.classList.remove('show')}});
 }
 async function boot(){try{const health=await api('/api/health');state.version=String(health.version||'');const versionLabel=$('#app-version');if(versionLabel)versionLabel.textContent=state.version?`Version ${state.version}`:'Version unavailable';const status=await api('/api/auth/status');if(!status.setupComplete){showAuth(true);return}try{const me=await api('/api/auth/me');state.userId=me.userId||'';state.isPrimary=Boolean(me.isPrimary);state.csrf=me.csrfToken;state.role=me.role||'viewer';await loadHealthDetails();$('#user-avatar').textContent=me.username.slice(0,1).toUpperCase();$('#auth-loading')?.classList.add('hidden');$('#app-shell')?.classList.remove('hidden');await loadAll()}catch(e){if(state.encryption?.status==='error'){renderEncryptionBanner();toast(state.encryption.message,true)}else showAuth(false)}}catch(e){const loading=$('#auth-loading');if(loading)loading.innerHTML='<div class="auth-loading-card"><b>VaultBack</b><span>Unable to check the session. Refresh to try again.</span></div>';toast(e.message,true)}}
-document.querySelectorAll('.nav-item').forEach(b=>b.onclick=()=>{if(b.dataset.externalHref){window.location.assign(b.dataset.externalHref);return}setView(b.dataset.view)});document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>setView(b.dataset.go));document.querySelectorAll('[data-view-link]').forEach(b=>b.onclick=()=>setView(b.dataset.viewLink));$('#new-connection').onclick=()=>showConnectionForm();$('#new-storage').onclick=()=>showStorageForm();$('#new-job').onclick=()=>{if(!state.connections.length||!state.storage.length){toast('Add a database and storage target first',true);return}showJobForm()};$('#refresh-runs').onclick=async()=>{await loadCollection('runs')};$('#logout').onclick=async()=>{try{await withButtonBusy($('#logout'),()=>api('/api/auth/logout',{method:'POST'}),'Signing out…');location.reload()}catch(e){toast(e.message,true)}};setTimeout(()=>void boot(),0);
+document.querySelectorAll('.nav-item').forEach(b=>b.onclick=event=>{if(b.tagName==='A'&&(event.ctrlKey||event.metaKey||event.shiftKey||event.altKey))return;if(b.tagName==='A')event.preventDefault();if(b.dataset.externalHref){window.location.assign(b.dataset.externalHref);return}setView(b.dataset.view)});document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>setView(b.dataset.go));document.querySelectorAll('[data-view-link]').forEach(b=>b.onclick=()=>setView(b.dataset.viewLink));$('#new-connection').onclick=()=>showConnectionForm();$('#new-storage').onclick=()=>showStorageForm();$('#new-job').onclick=()=>{if(!state.connections.length||!state.storage.length){toast('Add a database and storage target first',true);return}showJobForm()};$('#refresh-runs').onclick=async()=>{await loadCollection('runs')};$('#logout').onclick=async()=>{try{await withButtonBusy($('#logout'),()=>api('/api/auth/logout',{method:'POST'}),'Signing out…');location.reload()}catch(e){toast(e.message,true)}};setTimeout(()=>void boot(),0);
 
 function showStorageForm(item={}){
   const el=$('#storage-form');el.classList.remove('hidden');const c=item.config||{};const type=item.type||'local';
@@ -508,6 +515,9 @@ function showJobForm(item = {}) {
     field('Automatic retries', 'retryCount', item.retryCount ?? 0, 'number', 'min="0" max="10"') +
     field('Retry delay (seconds)', 'retryDelaySeconds', item.retryDelaySeconds || 300, 'number', 'min="30" max="86400"') +
     selectField('Overlapping run', 'overlapPolicy', [['skip', 'Skip while already running'], ['queue', 'Queue next run']], item.overlapPolicy || 'skip') +
+    field('Missed-start grace (minutes)','missedStartGraceMinutes',item.missedStartGraceMinutes ?? 15,'number','min="1" max="1440"') +
+    field('Maximum verified age (hours)','maxVerifiedAgeHours',item.maxVerifiedAgeHours ?? 26,'number','min="1" max="8760"') +
+    field('Long-running warning (minutes)','longRunningWarningMinutes',item.longRunningWarningMinutes ?? 120,'number','min="1" max="10080"') +
     field('Filename prefix', 'filenamePrefix', item.filenamePrefix || 'database-backup') +
     selectField('Status', 'enabled', [['true', 'Active'], ['false', 'Paused']], item.enabled === false ? 'false' : 'true') +
     '<div class="field full"><span class="hint">Choose all databases or select specific databases from the list returned by the connection.</span></div>'
@@ -516,6 +526,10 @@ function showJobForm(item = {}) {
   renderPicker($('#job-connections'), state.connections, selectedConnectionIds, 'connectionIds', 'Database connections', 'Search connections');
   renderPicker($('#job-storages'), state.storage, selectedStorageTargetIds, 'storageTargetIds', 'Storage targets', 'Search storage targets');
 
+  const requirements=document.createElement('div');requirements.className='field full';$('#job-storages').after(requirements);
+  const requiredValues=new Map((item.storageRequirements||[]).map(value=>[value.storageTargetId,value.required]));
+  const drawRequirements=()=>{requirements.innerHTML='<b>Required destinations</b><p class="hint">Optional destinations do not determine required protection.</p>'+[...el.querySelectorAll('input[name="storageTargetIds"]:checked')].map(input=>`<label class="toggle-row"><input type="checkbox" data-required-storage="${esc(input.value)}" ${requiredValues.get(input.value)!==false?'checked':''}> Required: ${esc(executionName(input.value,'storage'))}</label>`).join('');};
+  requirements.addEventListener('change',event=>{if(event.target.dataset.requiredStorage)requiredValues.set(event.target.dataset.requiredStorage,event.target.checked);});$('#job-storages').addEventListener('change',drawRequirements);drawRequirements();
   vaultbackAttachCronGuide(el);
   const layoutSelect = el.querySelector('[name="backupLayout"]');
   const compressionSelect = el.querySelector('[name="compression"]');
@@ -564,6 +578,8 @@ function showJobForm(item = {}) {
       const data = Object.fromEntries(f);
       data.connectionIds = [...form.querySelectorAll('input[name="connectionIds"]:checked')].map(input => input.value);
       data.storageTargetIds = [...form.querySelectorAll('input[name="storageTargetIds"]:checked')].map(input => input.value);
+      data.storageRequirements=data.storageTargetIds.map(storageTargetId=>({storageTargetId,required:requiredValues.get(storageTargetId)!==false}));
+      for(const key of ['missedStartGraceMinutes','maxVerifiedAgeHours','longRunningWarningMinutes'])data[key]=Number(data[key]);
       data.databaseSelections = readSelections();
       data.databases = data.databaseSelections.flatMap(item => item.databases);
       data.databaseScope = form.querySelector('[name="databaseScope"]')?.value || 'selected';
@@ -633,10 +649,14 @@ function setView(view, options = {}) {
   if (nextView === 'connections') renderConnections();
   if (nextView === 'storage') renderStorage();
   if (nextView === 'jobs') renderJobs();
-  if (nextView === 'runs') renderRuns();
+  if (nextView === 'runs') {renderRuns();if(state.csrf){void loadExecutions();void loadProtection();}}
   if (nextView === 'recovery') { renderRecovery(); if (state.csrf) void loadRecovery(); }
   if (nextView === 'processes') { renderProcesses(); if (state.csrf) void loadLiveProcesses(); }
   if (nextView === 'settings') renderSettings();
+  if (nextView === 'settings' || nextView === 'recovery') {
+    document.querySelector(`#view-${nextView} .section-jump-nav`)?.remove();
+    initializeWorkspaceSections();
+  }
   if (nextView === 'sessions' && state.role === 'admin') { renderSessions(); if (state.csrf) void loadSessions(); }
   syncLiveProcessPolling();
   syncSessionsRefreshPolling();
@@ -661,7 +681,7 @@ document.addEventListener('click', event => {
 
 function formatCapacity(value) { if (value === null || value === undefined) return 'Unavailable'; if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`; if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`; return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`; }
 function updateNotificationFields() { const telegram = $('#notification-provider').value === 'telegram'; $('#notification-webhook-fields').classList.toggle('hidden', telegram); $('#notification-telegram-fields').classList.toggle('hidden', !telegram); }
-async function saveNotifications() { const button = $('#save-notifications'); try { await withButtonBusy(button, async () => { await api('/api/settings/notifications', { method: 'POST', body: JSON.stringify({ enabled: $('#notification-enabled').checked, provider: $('#notification-provider').value, webhookUrl: $('#notification-webhook-url').value, webhookToken: $('#notification-webhook-token').value, botToken: $('#notification-bot-token').value, chatId: $('#notification-chat-id').value, events: { backup_success: $('#notify-success').checked, backup_failed: $('#notify-failed').checked, backup_retry: $('#notify-retry')?.checked, backup_stale: $('#notify-stale')?.checked, storage_failed: $('#notify-storage')?.checked, capacity_warning: $('#notify-capacity').checked } }) }); toast('Notification settings saved'); state.notifications = await api('/api/settings/notifications'); renderSettings(); }, 'Saving settings…'); } catch (e) { toast(e.message, true); } }
+async function saveNotifications() { const button = $('#save-notifications'); try { await withButtonBusy(button, async () => { await api('/api/settings/notifications', { method: 'POST', body: JSON.stringify({ enabled: $('#notification-enabled').checked, provider: $('#notification-provider').value, webhookUrl: $('#notification-webhook-url').value, webhookToken: $('#notification-webhook-token').value, botToken: $('#notification-bot-token').value, chatId: $('#notification-chat-id').value, events: { backup_success: $('#notify-success').checked, backup_failed: $('#notify-failed').checked, backup_recovered: $('#notify-recovered')?.checked, backup_missed_start: $('#notify-missed')?.checked, backup_long_running: $('#notify-long-running')?.checked, backup_stale: $('#notify-stale')?.checked, storage_failed: $('#notify-storage')?.checked, capacity_warning: $('#notify-capacity').checked } }) }); toast('Notification settings saved'); state.notifications = await api('/api/settings/notifications'); renderSettings(); }, 'Saving settings…'); } catch (e) { toast(e.message, true); } }
 function renderEnvironmentSettings() {
   const panel = $('#environment-panel');
   if (!panel) return;
@@ -804,7 +824,7 @@ async function loadReferenceData() {
 }
 
 async function loadDashboardRuns() {
-  const result = await api('/api/runs?page=1&pageSize=5');
+  const result = await api('/api/runs?page=1&pageSize=100');
   state.dashboard.runs = result.items || [];
   state.dashboard.runsMeta = result;
   renderDashboard();
@@ -953,12 +973,34 @@ function renderBackupActivity() {
   root.innerHTML = `<div class="backup-activity-summary"><span><b>${successTotal}</b> successful backup${successTotal === 1 ? '' : 's'}</span><span><b>${failedTotal}</b> failed${failedTotal === 1 ? '' : ' runs'}</span><span class="backup-activity-legend"><i class="is-success"></i>Success <i class="is-failed"></i>Failed <i class="is-empty"></i>No run</span></div><div class="backup-activity-calendar"><div class="backup-activity-weekdays" aria-hidden="true"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div><div class="backup-activity-grid" role="grid" aria-label="Backup activity for the last 26 weeks">${cellMarkup}</div></div><p class="backup-activity-note">${esc(data.from)} to ${esc(data.to)} · Select a day to open backup history.</p>`;
 }
 
+function renderOverviewOperations() {
+  const runningRoot = $('#overview-running');
+  const storageRoot = $('#overview-storage-readiness');
+  if (!runningRoot || !storageRoot) return;
+  const active = state.processes.filter(item => item.status === 'running');
+  const fresh = state.operationsProcessesAt && Date.now() - state.operationsProcessesAt < 30000;
+  $('#operations-live-summary').textContent = !fresh ? 'Live status unavailable — waiting for an update' : active.length ? `${active.length} process${active.length === 1 ? '' : 'es'} running` : 'No processes running';
+  runningRoot.innerHTML = active.slice(0, 5).map(item => `<div class="operations-row"><div><b>${esc(item.jobName || 'Backup process')}</b><small>${esc(processStageLabels[item.stage] || item.stage || 'Processing')}${fresh ? '' : ' · Last known status'}</small></div><span>${esc(processDuration(item))}</span></div>`).join('') || `<p class="hint">${fresh ? 'The next scheduled jobs appear below.' : 'Open process details to refresh. No idle state is assumed.'}</p>`;
+  renderOverviewExecutionQueue(runningRoot);
+  const schedules = state.jobs.filter(job => job.enabled && job.nextRunAt).sort((a, b) => Date.parse(a.nextRunAt) - Date.parse(b.nextRunAt));
+  storageRoot.innerHTML = state.storage.map(target => {
+    const job = schedules.find(item => (item.storageTargetIds || [item.storageTargetId]).includes(target.id));
+    const health = state.storageHealth.find(item => item.targetId === target.id);
+    const estimate = job ? estimateNextBackup(job, target.id, state.dashboard.runs || [], health) : { status: 'unscheduled', reason: 'No upcoming backup uses this destination.' };
+    const label = { 'estimated-fit': 'Estimated to fit', 'at-risk': 'Space at risk', unknown: 'Unknown', unscheduled: 'Not scheduled' }[estimate.status];
+    const detail = estimate.estimatedBytes ? `${formatCapacity(estimate.estimatedBytes)} estimated · ${formatCapacity(estimate.freeBytes)} free` : estimate.reason;
+    return `<div class="operations-row"><div><b>${esc(target.name)}</b><small>${esc(job ? job.name + ' · ' + overviewDateLabel(job.nextRunAt) : 'No upcoming backup')}</small><small>${esc(detail)}</small>${estimate.estimatedBytes ? `<small>Checked ${esc(fmtDate(health.checkedAt))}. ${esc(estimate.reason)}</small>` : ''}</div><span class="operations-readiness ${estimate.status}">${esc(label)}</span></div>`;
+  }).join('') || '<p class="hint">Add a storage destination to assess capacity.</p>';
+}
+
 function renderDashboard() {
+  renderOverviewOperations();
   const runsMeta = state.dashboard.runsMeta || {};
   const dashboardRuns = state.dashboard.runs || [];
   const totalJobs = state.jobs.length;
   const activeJobs = state.jobs.filter(job => job.enabled).length;
   const totalStorage = state.storage.length;
+  document.querySelector('.workspace-workflow')?.classList.toggle('hidden', state.connections.length > 0 && totalStorage > 0 && totalJobs > 0);
   const success = Number(runsMeta.successTotal ?? dashboardRuns.filter(run => run.status === 'success').length);
   const failedTotal = Number(runsMeta.failedTotal ?? dashboardRuns.filter(run => run.status === 'failed').length);
   const failed = Number(runsMeta.attentionTotal ?? failedTotal);
@@ -970,7 +1012,7 @@ function renderDashboard() {
   const health = failed > 0 ? 'Attention' : success > 0 ? 'Healthy' : 'Awaiting data';
   const healthDetail = failed > 0 ? `${failed} failed run${failed === 1 ? '' : 's'} need review` : resolvedFailures > 0 ? `${resolvedFailures} earlier failure${resolvedFailures === 1 ? '' : 's'} resolved by a later successful backup` : success > 0 ? `${success} successful run${success === 1 ? '' : 's'} recorded` : 'Run a schedule to verify delivery';
   const headline = failed > 0 ? 'Backup attention required.' : !state.connections.length || !totalStorage || !totalJobs ? 'Complete your backup setup.' : !success ? 'Ready for your first backup.' : 'Backups are on track.';
-  const subtitle = failed > 0 ? 'Review the latest failure, confirm the destination is reachable, and retry when the cause is resolved.' : 'Monitor schedule coverage, delivery readiness, and the latest recovery point from one place.';
+  const subtitle = failed > 0 ? 'Review the latest failure, confirm the destination is reachable, and retry when the cause is resolved.' : 'Watch running jobs, upcoming backups, and destination capacity from one place.';
 
   $('#overview-headline').textContent = headline;
   $('#overview-subtitle').textContent = subtitle;
@@ -985,8 +1027,8 @@ function renderDashboard() {
   $('#metric-next-detail').textContent = nextJob ? nextJob.name : 'No active schedule';
 
   $('#overview-upcoming').innerHTML = activeSchedules.slice(0, 4).map(job => {
-    const storage = state.storage.find(target => target.id === job.storageTargetId);
-    return `<div class="overview-schedule-row"><span class="overview-schedule-dot"></span><div><b>${esc(job.name)}</b><small>${esc(storage?.name || 'Storage target missing')}</small></div><time>${esc(overviewDateLabel(job.nextRunAt))}</time></div>`;
+    const storageNames = (job.storageTargetIds || [job.storageTargetId]).map(id => state.storage.find(target => target.id === id)?.name || 'Storage target missing').join(', ');
+    return `<div class="overview-schedule-row"><span class="overview-schedule-dot"></span><div><b>${esc(job.name)}</b><small>${esc(storageNames)}</small></div><time>${esc(overviewDateLabel(job.nextRunAt))}</time></div>`;
   }).join('') || `<div class="overview-empty"><b>${totalJobs ? 'No active schedules' : 'No schedules yet'}</b><span>${totalJobs ? 'Enable a schedule to keep the next recovery point moving.' : 'Create a schedule after adding a database and storage target.'}</span><button type="button" class="small-button" onclick="setView('jobs')">Open schedules</button></div>`;
 
   if (latest) {
@@ -1009,8 +1051,13 @@ function renderDashboard() {
   if (failed === 0 && resolvedFailures > 0) checks.push({ ready: true, title: 'Earlier backup issues resolved', detail: `${resolvedFailures} failed run${resolvedFailures === 1 ? '' : 's'} remain in history, but a later backup completed successfully.`, view: 'runs' });
   $('#readiness').innerHTML = checks.slice(0, 4).map(check => `<button type="button" class="check-row ${check.ready ? 'is-ready' : 'is-attention'}" onclick="setView('${check.view}')"><span class="check-icon">${check.ready ? '✓' : '→'}</span><span><h4>${esc(check.title)}</h4><p>${esc(check.detail)}</p></span><span class="check-arrow">→</span></button>`).join('');
 }
-async function runJob(buttonOrId, id) { if (state.role !== 'admin') return toast('Only administrators can run schedules', true); const targetId=id||buttonOrId; const button=id?buttonOrId:document.querySelector(`button[onclick="runJob('${targetId}')"]`); try { await withButtonBusy(button, async()=>{ const result = await api(`/api/jobs/${encodeURIComponent(targetId)}/run`, { method: 'POST' }); await Promise.all([loadCollection('runs'), loadDashboardRuns(), loadBackupActivity()]); if (result?.failed) toast(`${result.completed} backup pair(s) succeeded; ${result.failed} failed. History has the per-pair results.`, true); else toast('Backup completed; history updated'); }, 'Starting backup…'); } catch (e) { await Promise.allSettled([loadCollection('runs'), loadDashboardRuns(), loadBackupActivity()]); toast(e.message, true); } }
-async function retryRun(buttonOrId, id) { if (state.role !== 'admin') return toast('Only administrators can retry schedules', true); const targetId=id||buttonOrId; const button=id?buttonOrId:document.querySelector(`button[onclick="retryRun('${targetId}')"]`); try { await withButtonBusy(button, async()=>{ await api(`/api/runs/${encodeURIComponent(targetId)}/retry`, { method: 'POST' }); await Promise.all([loadCollection('runs'), loadDashboardRuns(), loadBackupActivity()]); toast('Backup retry started'); }, 'Retrying backup…'); } catch (e) { toast(e.message, true); } }
+async function runJob(buttonOrId,id) { if(state.role!=='admin')return toast('Administrator access required',true);const targetId=id||buttonOrId;try {const result=await api(`/api/jobs/${encodeURIComponent(targetId)}/executions`,{method:'POST',body:'{}'});toast('Backup execution queued');await loadExecutions();setView('runs');await inspectExecution(result.id);}catch(error){toast(error.message,true);} }
+async function retryRun(buttonOrId,id) {
+  if(state.role!=='admin')return toast('Administrator access required',true);
+  const targetId=id||buttonOrId;const run=state.pageData.runs.find(item=>item.id===targetId);
+  const proceed=await appDialog({title:'Retry this backup pair?',message:run?`${run.connectionName||'Source database'} → ${run.storageTargetName||'Storage destination'}. ${run.errorMessage||'Inspect destination artifacts before retrying a failed backup.'}`:'This retries the original source/destination pair. Inspect the destination for incomplete artifacts before continuing.',confirmText:'Queue retry',cancelText:'Cancel'});if(!proceed)return;
+  try{const result=await api(`/api/runs/${encodeURIComponent(targetId)}/retry-execution`,{method:'POST',body:'{}'});toast('Backup retry queued');await loadExecutions();setView('runs');if(result?.id)await inspectExecution(result.id);}catch(error){toast(error.message,true);}
+}
 async function showVerificationReport(id) { try { const reports = await api(`/api/runs/${encodeURIComponent(id)}/verification`); const latest = reports[0]; toast(latest ? `${latest.status}: ${latest.message}` : 'No verification report is available yet', latest?.status === 'failed'); } catch (e) { toast(e.message, true); } }
 
 function isMobileSidebarViewport() {
@@ -1224,8 +1271,8 @@ async function exportFullConfig() { const password = $('#full-export-password').
 async function importFullConfig() { const file = $('#full-import-file').files?.[0]; const password = $('#full-import-password').value; if (!file) { toast('Choose an encrypted VaultBack export package first', true); return; } if (password.length < 12) { toast('Enter the export password of at least 12 characters', true); return; } if (file.size > 60 * 1024 * 1024) { toast('The export package is too large', true); return; } try { const pkg = JSON.parse(await file.text()); const result = await api('/api/settings/import/full', { method: 'POST', body: JSON.stringify({ password, package: pkg }) }); $('#full-import-file').value = ''; $('#full-import-password').value = ''; toast(result.message || 'Import staged; restart VaultBack to activate it'); } catch (e) { toast(e.message, true); } }
 function bindMigrationControls() { if (document.body.dataset.migrationBound) return; document.body.dataset.migrationBound = '1'; $('#export-full').onclick = () => void withButtonBusy($('#export-full'), exportFullConfig, 'Exporting…'); $('#import-full').onclick = () => void withButtonBusy($('#import-full'), importFullConfig, 'Importing…'); }
 async function restoreRunFromHistory(id) { return openRestoreModal(id); }
-function closeRestoreModal() { const modal = $('#restore-modal'); if (modal) modal.remove(); document.body.classList.remove('modal-open'); }
-function openRestoreModal(id) { const run = state.pageData.runs.find(item => item.id === id); if (!run) return toast('Backup run is no longer available', true); const canRename = run.databaseScope === 'selected' && Array.isArray(run.databases) && run.databases.length === 1; const root = $('#modal-root'); const connectionOptions = state.connections.map(connection => `<option value="${esc(connection.id)}" ${connection.id === run.databaseConnectionId ? 'selected' : ''}>${esc(connection.name)} · ${esc(connection.host)}:${esc(connection.port)}</option>`).join(''); root.insertAdjacentHTML('beforeend', `<section id="restore-modal" class="form-panel"><form class="form-shell" onsubmit="return false"><button type="button" class="modal-close" aria-label="Close restore dialog" onclick="closeRestoreModal()">×</button><h3>Restore backup</h3><p class="hint">Choose the destination server and whether the backup should replace its original database names or be restored under a new name.</p><div class="form-grid"><div class="field full"><label for="restore-connection">Destination database connection</label><select id="restore-connection">${connectionOptions}</select></div><div class="field full"><label for="restore-mode">Restore mode</label><select id="restore-mode"><option value="overwrite">Restore original database names (may overwrite data)</option><option value="new" ${canRename ? '' : 'disabled'}>Restore as a new database name${canRename ? '' : ' — only available for one-database backups'}</option></select></div><div id="restore-new-fields" class="field full hidden"><label for="restore-database-name">New database name</label><input id="restore-database-name" placeholder="example_restored" pattern="[A-Za-z0-9_]{1,64}" /><small class="hint">Letters, numbers, and underscores only.</small></div><div id="restore-warning" class="callout dependency-warning full"><b>Destructive action</b><br>This can overwrite the latest data in the destination database(s). Confirm that you have a recent backup and selected the correct destination.</div><label class="field full"><span><input id="restore-confirm" type="checkbox" /> I understand that existing destination data may be overwritten.</span></label></div><div class="form-actions"><button type="button" class="secondary" onclick="closeRestoreModal()">Cancel</button><button type="button" class="primary" id="restore-submit">Restore backup</button></div></form></section>`); document.body.classList.add('modal-open'); const mode = $('#restore-mode'); const fields = $('#restore-new-fields'); const warning = $('#restore-warning'); const update = () => { const renamed = mode.value === 'new'; fields.classList.toggle('hidden', !renamed); warning.innerHTML = renamed ? '<b>Check the name carefully</b><br>If the new database name already exists, restoring can overwrite it. Choose a new name or explicitly confirm the overwrite.' : '<b>Destructive action</b><br>This can overwrite the latest data in the destination database(s). Confirm that you have a recent backup and selected the correct destination.'; }; mode.onchange = update; update(); $('#restore-submit').onclick = async () => { const submit = $('#restore-submit'); const newName = $('#restore-database-name').value.trim(); if (mode.value === 'new' && !/^[A-Za-z0-9_]{1,64}$/.test(newName)) return toast('Enter a valid new database name', true); if (!$('#restore-confirm').checked) return toast('Confirm the restore warning before continuing', true); submit.disabled = true; try { const result = await api(`/api/runs/${encodeURIComponent(id)}/restore`, { method: 'POST', body: JSON.stringify({ connectionId: $('#restore-connection').value, mode: mode.value, databaseName: newName, overwriteConfirmed: true }) }); closeRestoreModal(); toast(result.message || `Restore completed on ${result.destination}`); } catch (e) { toast(e.message, true); submit.disabled = false; } }; }
+function closeRestoreModal() { closeGuidedRestoreState(); const modal = $('#restore-modal'); if (modal) modal.remove(); document.body.classList.remove('modal-open'); }
+function openAdvancedRestoreModal(id) { const run = state.pageData.runs.find(item => item.id === id); if (!run) return toast('Backup run is no longer available', true); const restoreGeneration=guidedRestoreUi.generation; const canRename = run.databaseScope === 'selected' && Array.isArray(run.databases) && run.databases.length === 1; const root = $('#modal-root'); const connectionOptions = state.connections.map(connection => `<option value="${esc(connection.id)}" ${connection.id === run.databaseConnectionId ? 'selected' : ''}>${esc(connection.name)} · ${esc(connection.host)}:${esc(connection.port)}</option>`).join(''); root.insertAdjacentHTML('beforeend', `<section id="restore-modal" class="form-panel" role="dialog" aria-modal="true" aria-labelledby="advanced-restore-title"><form class="form-shell" onsubmit="return false"><button type="button" class="modal-close" aria-label="Close restore dialog" onclick="closeRestoreModal()">×</button><h3 id="advanced-restore-title">Advanced database restore</h3><p class="hint">Choose the destination server and whether the backup should replace its original database names or be restored under a new name.</p><div class="form-grid"><div class="field full"><label for="restore-connection">Destination database connection</label><select id="restore-connection">${connectionOptions}</select></div><div class="field full"><label for="restore-mode">Restore mode</label><select id="restore-mode"><option value="overwrite">Restore original database names (may overwrite data)</option><option value="new" ${canRename ? '' : 'disabled'}>Restore as a new database name${canRename ? '' : ' — only available for one-database backups'}</option></select></div><div id="restore-new-fields" class="field full hidden"><label for="restore-database-name">New database name</label><input id="restore-database-name" placeholder="example_restored" pattern="[A-Za-z0-9_]{1,64}" /><small class="hint">Letters, numbers, and underscores only.</small></div><div id="restore-warning" class="callout dependency-warning full"><b>Destructive action</b><br>This can overwrite the latest data in the destination database(s). Confirm that you have a recent backup and selected the correct destination.</div><label class="field full"><span><input id="restore-confirm" type="checkbox" /> I understand that existing destination data may be overwritten.</span></label></div><div class="form-actions"><button type="button" class="secondary" onclick="closeRestoreModal()">Cancel</button><button type="button" class="primary" id="restore-submit">Restore backup</button></div></form></section>`); document.body.classList.add('modal-open'); bindRestoreKeyboard($('#restore-modal')); const mode = $('#restore-mode'); const fields = $('#restore-new-fields'); const warning = $('#restore-warning'); const update = () => { const renamed = mode.value === 'new'; fields.classList.toggle('hidden', !renamed); warning.innerHTML = renamed ? '<b>Check the name carefully</b><br>If the new database name already exists, restoring can overwrite it. Choose a new name or explicitly confirm the overwrite.' : '<b>Destructive action</b><br>This can overwrite the latest data in the destination database(s). Confirm that you have a recent backup and selected the correct destination.'; }; mode.onchange = update; update(); $('#restore-submit').onclick = async () => { const submit = $('#restore-submit'); const newName = $('#restore-database-name').value.trim(); if (mode.value === 'new' && !/^[A-Za-z0-9_]{1,64}$/.test(newName)) return toast('Enter a valid new database name', true); if (!$('#restore-confirm').checked) return toast('Confirm the restore warning before continuing', true); const request={connectionId: $('#restore-connection').value,mode:mode.value,databaseName:newName,overwriteConfirmed:true}; const destination=state.connections.find(item=>item.id===request.connectionId); if(!await appDialog({title:'Confirm production restore',message:`Restore ${run.filename||run.id} on ${destination?.name||request.connectionId} (${destination?.host||'destination'}). Mode: ${request.mode==='new'?'database '+newName:'original database names'}. Existing destination data may be overwritten. This is separate from the isolated rehearsal.`,confirmText:'Restore destination data',cancelText:'Cancel',danger:true}))return; if(guidedRestoreUi.generation!==restoreGeneration||!submit.isConnected)return; submit.disabled = true; try { const result = await api(`/api/runs/${encodeURIComponent(id)}/restore`, { method: 'POST', body: JSON.stringify(request) }); if(guidedRestoreUi.generation===restoreGeneration)closeRestoreModal(); toast(result.message || `Restore completed on ${result.destination}`); } catch (e) { toast(e.message, true); if(submit.isConnected)submit.disabled = false; } }; }
 function renderRuns() { collectionControls('runs', 'runs-controls', 'Search schedule, filename, or error', true); const section = $('#view-runs'); const header = section.querySelector('thead tr'); if (header && !header.querySelector('[data-verification]')) header.insertAdjacentHTML('beforeend', '<th data-verification>Verification</th><th>Action</th>'); $('#runs-table').innerHTML = state.pageData.runs.map(r => `<tr><td><b>${esc(r.jobName)}${r.connectionName ? ` · ${esc(r.connectionName)}` : ""}</b><br><small>${esc(r.filename || r.errorMessage || '—')}</small><small>${esc(r.storageTargetName || "")} · ${esc(r.databaseScope || "scope unknown")} · ${esc(r.backupLayout || "layout unknown")}</small></td><td><span class="status ${esc(r.status)}">${esc(r.status)}</span></td><td>${fmtDate(r.startedAt)}</td><td>${fmtBytes(r.sizeBytes)}</td><td class="checksum">${r.sha256 ? esc(r.sha256.slice(0, 16)) + '…' : '—'}</td><td>${r.verificationStatus === 'passed' ? '<span class="verified">Archive verified</span>' : esc(r.verificationStatus || '—')}</td><td>${r.status === 'success' ? `<a class="small-button" href="/api/runs/${encodeURIComponent(r.id)}/download" download>Download</a><button class="small-button" onclick="showVerificationReport('${r.id}')">Report</button>${state.role === 'admin' ? `<button class="small-button" onclick="openRestoreModal('${r.id}')">Restore</button>` : ''}` : r.status === 'failed' && state.role === 'admin' ? `<button class="small-button" onclick="retryRun('${r.id}')">Retry</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">No backup runs match this search.</td></tr>'; renderCollectionPagination('runs', 'runs-pagination'); }
 let processModalPreviousFocus = null;
 
@@ -1318,8 +1365,10 @@ async function loadLiveProcesses() {
   try {
     const result = await api('/api/processes');
     state.processes = result.items || [];
+    state.operationsProcessesAt = Date.now();
     renderProcesses();
     renderProcessIndicator();
+    renderOverviewOperations();
     const active = state.processes.filter(item => item.status === 'running').length;
     const live = $('#process-live-status');
     const modalLive = $('#process-modal-status');
@@ -1328,6 +1377,7 @@ async function loadLiveProcesses() {
     if (modalLive) modalLive.innerHTML = `<span class="live-dot"></span>${status}`;
   } catch (error) {
     renderProcessIndicator();
+    renderOverviewOperations();
     const message = `<div class="callout">Unable to load live process data: ${esc(error.message)}</div>`;
     if (state.currentView === 'processes') { const list = $('#processes-list'); if (list) list.innerHTML = message; }
     const modalList = $('#process-modal-list');
@@ -1463,7 +1513,7 @@ function openPitrConfigurationModal(connectionId) {
   if (!item) return toast('PITR source is no longer available', true);
   if (!jobs.length) return toast('Create an enabled all-database, single-layout backup schedule with all database objects before configuring PITR', true);
   if (!targets.length) return toast('Add a storage target before configuring PITR', true);
-  $('#modal-root').insertAdjacentHTML('beforeend', `<section id="pitr-config-modal" class="form-panel recovery-modal" role="dialog" aria-modal="true" aria-labelledby="pitr-config-title"><form class="form-shell" onsubmit="return false"><button type="button" class="modal-close" aria-label="Close PITR configuration" onclick="closePitrConfigurationModal()">×</button><span class="kicker">SCHEDULED PITR</span><h3 id="pitr-config-title">Configure ${esc(item.name)}</h3><p class="hint">PITR starts after a new successful full user-database baseline records its engine-specific binlog coordinate. Binary logging alone does not prove a usable recovery chain.</p><div class="field full"><label for="pitr-backup-job">Baseline schedule</label><select id="pitr-backup-job">${jobs.map(job => `<option value="${esc(job.id)}" ${job.id === item.baseJobId ? 'selected' : ''}>${esc(job.name)}</option>`).join('')}</select></div><div class="field full"><label for="pitr-config-storage">Binlog storage target</label><select id="pitr-config-storage">${targets.map(target => `<option value="${esc(target.id)}" ${target.id === item.storageTargetId ? 'selected' : ''}>${esc(target.name)} · ${esc(target.type)}</option>`).join('')}</select></div><div class="field"><label for="pitr-capture-interval">Capture every (minutes)</label><input id="pitr-capture-interval" type="number" min="1" max="1440" value="${Number(item.captureIntervalMinutes || 15)}" required /></div><label class="toggle-row"><input id="pitr-capture-enabled" type="checkbox" ${item.enabled ? 'checked' : 'checked'} /><span>Enable scheduled capture</span></label><div class="callout">Keep the capture interval shorter than source binlog retention. VaultBack retains captured logs without automatic pruning so a retained baseline is not silently detached from its logs; storage use will grow until an administrator removes old artifacts.</div><div class="form-actions"><button type="button" class="secondary" onclick="closePitrConfigurationModal()">Cancel</button><button type="button" class="primary" id="save-pitr-config">Save configuration</button></div></form></section>`);
+  $('#modal-root').insertAdjacentHTML('beforeend', `<section id="pitr-config-modal" class="form-panel recovery-modal" role="dialog" aria-modal="true" aria-labelledby="pitr-config-title"><form class="form-shell" onsubmit="return false"><button type="button" class="modal-close" aria-label="Close PITR configuration" onclick="closePitrConfigurationModal()">×</button><span class="kicker">SCHEDULED PITR</span><h3 id="pitr-config-title">Configure ${esc(item.name)}</h3><p class="hint">PITR starts after a new successful full user-database baseline records its engine-specific binlog coordinate. Binary logging alone does not prove a usable recovery chain.</p><div class="field full"><label for="pitr-backup-job">Baseline schedule</label><select id="pitr-backup-job">${jobs.map(job => `<option value="${esc(job.id)}" ${job.id === item.baseJobId ? 'selected' : ''}>${esc(job.name)}</option>`).join('')}</select></div><div class="field full"><label for="pitr-config-storage">Binlog storage target</label><select id="pitr-config-storage">${targets.map(target => `<option value="${esc(target.id)}" ${target.id === item.storageTargetId ? 'selected' : ''}>${esc(target.name)} · ${esc(target.type)}</option>`).join('')}</select></div><div class="field"><label for="pitr-capture-interval">Capture every (minutes)</label><input id="pitr-capture-interval" type="number" min="1" max="1440" value="${Number(item.captureIntervalMinutes || 15)}" required /></div><label class="toggle-row"><input id="pitr-capture-enabled" type="checkbox" ${item.enabled ? 'checked' : ''} /><span>Enable scheduled capture</span></label><div class="callout">Keep the capture interval shorter than source binlog retention. VaultBack retains captured logs without automatic pruning so a retained baseline is not silently detached from its logs; storage use will grow until an administrator removes old artifacts.</div><div class="form-actions"><button type="button" class="secondary" onclick="closePitrConfigurationModal()">Cancel</button><button type="button" class="primary" id="save-pitr-config">Save configuration</button></div></form></section>`);
   document.body.classList.add('modal-open');
   $('#pitr-capture-enabled').checked = item.enabled !== false;
   $('#save-pitr-config').onclick = async () => {
@@ -1482,7 +1532,7 @@ function openPitrRehearsalModal(connectionId) {
   const minTime = utcToLocalInput(item.baselineCoordinateAt);
   const maxTime = utcToLocalInput(item.lastContinuousAt);
   const defaultTime = maxTime || utcToLocalInput(new Date().toISOString());
-  $('#modal-root').insertAdjacentHTML('beforeend', `<section id="pitr-rehearsal-modal" class="form-panel recovery-modal" role="dialog" aria-modal="true" aria-labelledby="pitr-rehearsal-title"><form class="form-shell" onsubmit="return false"><button type="button" class="modal-close" aria-label="Close PITR rehearsal" onclick="closePitrRehearsalModal()">×</button><span class="kicker">POINT-IN-TIME RESTORE</span><h3 id="pitr-rehearsal-title">Rehearse ${esc(item.name)}</h3><p class="hint">The selected baseline is ${esc(item.baselineLogFile || '')}. Replay runs only into randomly named scratch databases on the dedicated recovery server, then verifies and removes them.</p><div class="field full"><label for="pitr-recovery-connection">Recovery-only connection</label><select id="pitr-recovery-connection">${destinations.map(connection => `<option value="${esc(connection.id)}">${esc(connection.name)} · ${esc(connection.host)}</option>`).join('')}</select></div><div class="field full"><label for="pitr-target-time">Recovery time (your local time)</label><input id="pitr-target-time" type="datetime-local" min="${esc(minTime)}" max="${esc(maxTime)}" value="${esc(defaultTime)}" required /></div><div class="callout">Available range: ${esc(fmtDate(item.baselineCoordinateAt))} to ${esc(fmtDate(item.lastContinuousAt))} UTC. Explicitly qualified SQL that cannot be safely mapped is rejected; a successful capability check alone is not a recovery guarantee.</div><div class="form-actions"><button type="button" class="secondary" onclick="closePitrRehearsalModal()">Cancel</button><button type="button" class="primary" id="start-pitr-rehearsal">Start rehearsal</button></div></form></section>`);
+  $('#modal-root').insertAdjacentHTML('beforeend', `<section id="pitr-rehearsal-modal" class="form-panel recovery-modal" role="dialog" aria-modal="true" aria-labelledby="pitr-rehearsal-title"><form class="form-shell" onsubmit="return false"><button type="button" class="modal-close" aria-label="Close PITR rehearsal" onclick="closePitrRehearsalModal()">×</button><span class="kicker">POINT-IN-TIME RESTORE</span><h3 id="pitr-rehearsal-title">Rehearse ${esc(item.name)}</h3><p class="hint">The selected baseline is ${esc(item.baselineLogFile || '')}. Replay runs only into randomly named scratch databases on the dedicated recovery server, then verifies and removes them.</p><div class="field full"><label for="pitr-recovery-connection">Recovery-only connection</label><select id="pitr-recovery-connection">${destinations.map(connection => `<option value="${esc(connection.id)}">${esc(connection.name)} · ${esc(connection.host)}</option>`).join('')}</select></div><div class="field full"><label for="pitr-target-time">Recovery time (your local time)</label><input id="pitr-target-time" type="datetime-local" min="${esc(minTime)}" max="${esc(maxTime)}" value="${esc(defaultTime)}" required /></div><div class="callout">Available range: ${esc(fmtDate(item.baselineCoordinateAt))} to ${esc(fmtDate(item.lastContinuousAt))} (your local time). Explicitly qualified SQL that cannot be safely mapped is rejected; a successful capability check alone is not a recovery guarantee.</div><div class="form-actions"><button type="button" class="secondary" onclick="closePitrRehearsalModal()">Cancel</button><button type="button" class="primary" id="start-pitr-rehearsal">Start rehearsal</button></div></form></section>`);
   document.body.classList.add('modal-open');
   $('#start-pitr-rehearsal').onclick = async () => {
     const localValue = $('#pitr-target-time').value;
@@ -1497,6 +1547,8 @@ async function revokeFleetServer(id) { if (!await appDialog({ title: 'Revoke thi
 
 async function loadAll() {
   await Promise.all(['connections', 'storage', 'jobs', 'runs'].map(loadCollection).concat(loadBackupActivity(), loadRecovery(), loadReferenceData(), loadDashboardRuns()));
+  await Promise.all([loadExecutions(),loadActiveExecutions(),loadProtection()]);
+  if(state.role==='admin'){void loadSourceGroups();void loadNotificationDeliveries();}
   try { state.storageHealth = await api('/api/storage/health'); } catch { state.storageHealth = []; }
   if (state.role === 'admin') await loadCollection('users'); else state.users = [];
   updateRoleUi();
@@ -1566,7 +1618,7 @@ function ensureEscalationPanel() {
   const panel = document.createElement('div');
   panel.id = 'notification-escalation-panel';
   panel.className = 'panel admin-only-setting';
-  panel.innerHTML = '<div class="panel-head"><div><span class="kicker">ALERT POLICY</span><h3>Escalation events</h3></div></div><p class="hint">Choose which retry, stale-backup, and storage-health events should be delivered with your configured notification provider.</p><div class="settings-checks"><label><input id="notify-retry" type="checkbox" /> Retry schedules</label><label><input id="notify-stale" type="checkbox" /> Stale backups</label><label><input id="notify-storage" type="checkbox" /> Storage failures</label></div>';
+  panel.innerHTML = '<div class="panel-head"><div><span class="kicker">ALERT POLICY</span><h3>Escalation events</h3></div></div><p class="hint">Choose which retry, stale-backup, and storage-health events should be delivered with your configured notification provider.</p><div class="settings-checks"><label class="hidden"><input id="notify-retry" type="checkbox" /> Legacy retry preference</label><label><input id="notify-recovered" type="checkbox" /> Recovered backups</label><label><input id="notify-missed" type="checkbox" /> Missed starts</label><label><input id="notify-long-running" type="checkbox" /> Long-running backups</label><label><input id="notify-stale" type="checkbox" /> Stale backups</label><label><input id="notify-storage" type="checkbox" /> Storage failures</label></div>';
   settingsView.insertBefore(panel, settingsView.querySelector('.admin-panel'));
 }
 
@@ -1659,6 +1711,9 @@ var vaultbackBaseRenderSettings = function() {
   $('#notify-success').checked = Boolean(notification.events?.backup_success);
   $('#notify-failed').checked = notification.events?.backup_failed !== false;
   $('#notify-retry').checked = notification.events?.backup_retry !== false;
+  $('#notify-recovered').checked=notification.events?.backup_recovered!==false;
+  $('#notify-missed').checked=notification.events?.backup_missed_start!==false;
+  $('#notify-long-running').checked=notification.events?.backup_long_running!==false;
   $('#notify-stale').checked = notification.events?.backup_stale !== false;
   $('#notify-storage').checked = notification.events?.storage_failed !== false;
   $('#notify-capacity').checked = notification.events?.capacity_warning !== false;
@@ -1945,3 +2000,55 @@ if ($('#api-usage-page-size')) $('#api-usage-page-size').onchange = event => {
   state.list.apiUsage.page = 1;
   void loadSessions();
 };
+
+
+// Section links keep long administration pages navigable without hiding evidence.
+function initializeWorkspaceSections() {
+  for (const view of ['settings', 'recovery']) {
+    const root = document.getElementById(`view-${view}`);
+    if (!root || root.querySelector('.section-jump-nav')) continue;
+    const sections = [...root.querySelectorAll('.panel')].filter(panel => panel.querySelector('h3'));
+    const nav = document.createElement('nav');
+    nav.className = 'section-jump-nav';
+    nav.setAttribute('aria-label', `${view === 'settings' ? 'Settings' : 'Recovery'} sections`);
+    sections.forEach((panel, index) => {
+      if (panel.classList.contains('admin-only-setting') && state.role !== 'admin') return;
+      if (!panel.id) panel.id = `${view}-section-${index}`;
+      const link = document.createElement('a');
+      link.href = `#${panel.id}`;
+      link.textContent = panel.querySelector('h3').textContent;
+      nav.appendChild(link);
+    });
+    root.querySelector('.section-intro')?.after(nav);
+  }
+}
+
+let workspaceFieldSequence = 0;
+function associateWorkspaceLabels(root = document) {
+  root.querySelectorAll('.field').forEach(field => {
+    const label = field.querySelector('label');
+    const control = field.querySelector('input,select,textarea');
+    if (!label || !control || label.contains(control) || label.htmlFor) return;
+    if (!control.id) control.id = `workspace-field-${++workspaceFieldSequence}`;
+    label.htmlFor = control.id;
+  });
+}
+associateWorkspaceLabels();
+new MutationObserver(() => associateWorkspaceLabels()).observe(document.body, { childList: true, subtree: true });
+initializeWorkspaceSections();
+
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Tab') return;
+  const dialogs = [...document.querySelectorAll('.confirm-dialog, .form-panel:not(.hidden), .user-form:not(.hidden), .process-modal')].filter(el => el.getClientRects().length);
+  const dialog = dialogs.at(-1);
+  if (!dialog) return;
+  const controls = [...dialog.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]')].filter(el => el.getClientRects().length);
+  const first = controls[0]; const last = controls.at(-1);
+  if (!first) return;
+  if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
+});
+
+setInterval(() => { if (state.currentView === 'dashboard') renderOverviewOperations(); }, 15000);
+
+initializeExecutionUi();

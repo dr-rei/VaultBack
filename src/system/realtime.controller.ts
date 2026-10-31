@@ -12,6 +12,7 @@ import { ApiCommonErrorResponses, ApiEventStreamResponse } from '../common/swagg
 @ApiCommonErrorResponses()
 export class RealtimeController {
   constructor(private readonly realtime: RealtimeService, private readonly auth: AuthService, private readonly system: SystemService) {
+    this.realtime.setSessionValidator(token => this.auth.getSession({cookies:{vb_session:token}} as any) || undefined);
     this.realtime.registerSnapshotProvider('sessions', context => this.auth.listActiveSessions({ cookies: { vb_session: context.sessionToken }, query: { page: context.query.sessionPage || '1', pageSize: context.query.sessionPageSize || '25' } } as any));
     this.realtime.registerSnapshotProvider('rate_limit', context => this.system.listApiUsage({ page: context.query.ratePage || '1', pageSize: context.query.ratePageSize || '25' }));
     this.realtime.registerSnapshotProvider('updates', () => this.system.updateInfo());

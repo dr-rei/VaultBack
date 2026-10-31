@@ -3,7 +3,7 @@ import { RecoveryController } from '../src/recovery/recovery.controller';
 
 describe('backup and PITR write authorization', () => {
   it('requires an administrator to run or retry a backup', async () => {
-    const auth = { requireAdmin: jest.fn(), requireSession: jest.fn() };
+    const auth = { requireAdmin: jest.fn().mockReturnValue({ user_id: 'admin-id' }), requireSession: jest.fn() };
     const backups = { runNow: jest.fn().mockResolvedValue({ ok: true }), retryRun: jest.fn().mockResolvedValue({ ok: true }) };
     const controller = new BackupController(backups as any, auth as any, {} as any, {} as any);
     const request = { method: 'POST' } as any;
@@ -14,6 +14,8 @@ describe('backup and PITR write authorization', () => {
     expect(auth.requireAdmin).toHaveBeenNthCalledWith(1, request);
     expect(auth.requireAdmin).toHaveBeenNthCalledWith(2, request);
     expect(auth.requireSession).not.toHaveBeenCalled();
+    expect(backups.runNow).toHaveBeenCalledWith('job-id', { userId: 'admin-id' });
+    expect(backups.retryRun).toHaveBeenCalledWith('run-id', { userId: 'admin-id' });
   });
 
   it('requires CSRF protection for download preparation', () => {

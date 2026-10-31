@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 import { ServerResponse } from 'node:http';
 
-export type RealtimeTopic = 'processes' | 'backup_runs' | 'sessions' | 'rate_limit' | 'updates' | 'storage_health' | 'downloads' | 'recovery_tests' | 'pitr_rehearsals';
+export type RealtimeTopic = 'processes' | 'backup_runs' | 'sessions' | 'rate_limit' | 'updates' | 'storage_health' | 'downloads' | 'recovery_tests' | 'pitr_rehearsals' | 'executions' | 'protection' | 'notification_deliveries';
 type Role = 'admin' | 'operator' | 'viewer' | string;
 type Connection = {
   id: string;
@@ -25,6 +25,8 @@ export class RealtimeService implements OnApplicationShutdown {
   private readonly pending = new Map<RealtimeTopic, { payload: unknown; timer: ReturnType<typeof setTimeout> }>();
   private readonly snapshots = new Map<RealtimeTopic, SnapshotProvider>();
   private readonly snapshotTimer: ReturnType<typeof setInterval>;
+  private sessionValidator?: (token: string) => {user_id: string; role: string} | undefined;
+  setSessionValidator(validator: (token: string) => {user_id: string; role: string} | undefined) { this.sessionValidator = validator; }
   private sequence = 0;
   private readonly maxConnectionsPerUser = 5;
   private readonly maxConnectionsPerIp = 20;
@@ -35,8 +37,8 @@ export class RealtimeService implements OnApplicationShutdown {
   }
 
   allowedTopics(role: Role): RealtimeTopic[] {
-    const common: RealtimeTopic[] = ['processes', 'backup_runs', 'storage_health', 'downloads'];
-    return role === 'admin' ? [...common, 'sessions', 'rate_limit', 'updates', 'recovery_tests', 'pitr_rehearsals'] : common;
+    const common: RealtimeTopic[] = ['processes', 'backup_runs', 'storage_health', 'downloads', 'executions', 'protection'];
+    return role === 'admin' ? [...common, 'sessions', 'rate_limit', 'updates', 'recovery_tests', 'pitr_rehearsals', 'notification_deliveries'] : common;
   }
 
   connect(response: ServerResponse, userId: string, role: Role, ip: string, sessionToken: string, requestedTopics: string[] = [], query: Record<string, string> = {}) {
@@ -130,6 +132,7 @@ export class RealtimeService implements OnApplicationShutdown {
 
   private pushSnapshots() {
     for (const connection of this.connections.values()) {
+      if (!this.validate(connection)) continue;
       for (const topic of connection.topics) {
         const provider = this.snapshots.get(topic);
         if (!provider) continue;
@@ -144,10 +147,22 @@ export class RealtimeService implements OnApplicationShutdown {
   }
 
   private writeEvent(connection: Connection, event: string, payload: unknown) {
+    if (!this.validate(connection)) return false;
+    if (event !== 'connected' && !connection.topics.has(event as RealtimeTopic)) return true;
     return this.writeRaw(connection, `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
   }
 
+  private validate(connection: Connection) {
+    if (!this.sessionValidator) return true;
+    const session = this.sessionValidator(connection.sessionToken);
+    if (!session || session.user_id !== connection.userId) { this.close(connection.id); return false; }
+    connection.role = session.role;
+    const allowed = new Set(this.allowedTopics(session.role));
+    for (const topic of connection.topics) if (!allowed.has(topic)) connection.topics.delete(topic);
+    return true;
+  }
   private writeRaw(connection: Connection, value: string) {
+    if (!this.validate(connection)) return false;
     try {
       if (connection.response.writableEnded || connection.response.destroyed) return false;
       connection.response.write(value);
