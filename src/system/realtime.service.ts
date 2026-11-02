@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 import { ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 
 export type RealtimeTopic = 'processes' | 'backup_runs' | 'sessions' | 'rate_limit' | 'updates' | 'storage_health' | 'downloads' | 'recovery_tests' | 'pitr_rehearsals' | 'executions' | 'protection' | 'notification_deliveries';
 type Role = 'admin' | 'operator' | 'viewer' | string;
@@ -14,6 +15,7 @@ type Connection = {
   topics: Set<RealtimeTopic>;
   heartbeat: ReturnType<typeof setInterval>;
   connectedAt: number;
+  snapshotFingerprints: Map<RealtimeTopic, string>;
 };
 export type RealtimeSnapshotContext = { userId: string; role: Role; ip: string; sessionToken: string; query: Record<string, string> };
 type SnapshotProvider = (context: RealtimeSnapshotContext) => unknown;
@@ -64,7 +66,8 @@ export class RealtimeService implements OnApplicationShutdown {
       heartbeat: setInterval(() => {
         if (!this.writeRaw(connection, ': heartbeat\n\n')) this.close(id);
       }, 25000),
-      connectedAt: Date.now()
+      connectedAt: Date.now(),
+      snapshotFingerprints: new Map()
     };
     connection.heartbeat.unref?.();
     this.connections.set(id, connection);
@@ -79,13 +82,17 @@ export class RealtimeService implements OnApplicationShutdown {
     });
     response.flushHeaders?.();
     this.writeEvent(connection, 'connected', { topics: [...topics], reconnect: true });
+    this.pushConnectionSnapshots(connection);
     return id;
   }
 
   publish(topic: RealtimeTopic, payload: unknown) {
+    const serialized = JSON.stringify(payload);
+    const fingerprint = serialized === undefined ? null : createHash('sha256').update(serialized).digest('hex');
     for (const connection of this.connections.values()) {
       if (!connection.topics.has(topic)) continue;
       if (!this.writeEvent(connection, topic, payload)) this.close(connection.id);
+      else if (topic !== 'processes' && fingerprint && connection.topics.has(topic)) connection.snapshotFingerprints.set(topic, fingerprint);
     }
   }
 
@@ -132,16 +139,28 @@ export class RealtimeService implements OnApplicationShutdown {
 
   private pushSnapshots() {
     for (const connection of this.connections.values()) {
-      if (!this.validate(connection)) continue;
-      for (const topic of connection.topics) {
-        const provider = this.snapshots.get(topic);
-        if (!provider) continue;
-        try {
-          const payload = provider({ userId: connection.userId, role: connection.role, ip: connection.ip, sessionToken: connection.sessionToken, query: connection.query });
-          if (payload && !this.writeEvent(connection, topic, payload)) this.close(connection.id);
-        } catch (error: any) {
-          this.logger.debug(`Realtime snapshot failed for ${topic}: ${String(error?.message || error).slice(0, 160)}`);
-        }
+      this.pushConnectionSnapshots(connection);
+    }
+  }
+
+  private pushConnectionSnapshots(connection: Connection) {
+    if (!this.validate(connection)) return;
+    for (const topic of connection.topics) {
+      const provider = this.snapshots.get(topic);
+      if (!provider) continue;
+      try {
+        const payload = provider({ userId: connection.userId, role: connection.role, ip: connection.ip, sessionToken: connection.sessionToken, query: connection.query });
+        if (payload === null || payload === undefined) continue;
+        const serialized = JSON.stringify(payload);
+        if (serialized === undefined) continue;
+        const fingerprint = createHash('sha256').update(serialized).digest('hex');
+        // Process snapshots are also liveness evidence, including while idle.
+        // Other snapshots need delivery only when their per-connection content changes.
+        if (topic !== 'processes' && connection.snapshotFingerprints.get(topic) === fingerprint) continue;
+        if (!this.writeEvent(connection, topic, payload)) { this.close(connection.id); return; }
+        if (connection.topics.has(topic)) connection.snapshotFingerprints.set(topic, fingerprint);
+      } catch (error: any) {
+        this.logger.debug(`Realtime snapshot failed for ${topic}: ${String(error?.message || error).slice(0, 160)}`);
       }
     }
   }
@@ -158,7 +177,10 @@ export class RealtimeService implements OnApplicationShutdown {
     if (!session || session.user_id !== connection.userId) { this.close(connection.id); return false; }
     connection.role = session.role;
     const allowed = new Set(this.allowedTopics(session.role));
-    for (const topic of connection.topics) if (!allowed.has(topic)) connection.topics.delete(topic);
+    for (const topic of connection.topics) if (!allowed.has(topic)) {
+      connection.topics.delete(topic);
+      connection.snapshotFingerprints.delete(topic);
+    }
     return true;
   }
   private writeRaw(connection: Connection, value: string) {

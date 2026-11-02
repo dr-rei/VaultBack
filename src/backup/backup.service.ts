@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { StringDecoder } from 'node:string_decoder';
 import { PairExecutionContext, PairOutcome } from './execution.types';
-import { BadRequestException, Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
 import { StorageDownloadProgress, StorageService } from '../storage/storage.service';
 import { DatabaseService } from '../database/database.service';
 import { BackupJob, BackupObjectOptions, DatabaseConnection, StorageTarget } from '../types';
@@ -61,7 +61,7 @@ class TempStorageLimitTransform extends Transform {
 const ZIP_CRC_TABLE = Array.from({ length: 256 }, (_, index) => { let value = index; for (let bit = 0; bit < 8; bit++) value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : value >>> 1; return value >>> 0; });
 
 @Injectable()
-export class BackupService implements OnApplicationShutdown {
+export class BackupService implements OnApplicationBootstrap, OnApplicationShutdown {
   private executionPipeline(...streams: any[]): Promise<void> {
     return (pipeline as any)(...streams, { signal: this.executionSignal.getStore() });
   }
@@ -76,6 +76,8 @@ export class BackupService implements OnApplicationShutdown {
   private readonly workClaimTokens = new Map<string, string>();
   private shuttingDown = false;
   constructor(private readonly store: DatabaseService, private readonly storage: StorageService, private readonly system: SystemService, private readonly realtime: RealtimeService) {}
+
+  onApplicationBootstrap() { this.realtime.registerSnapshotProvider('processes', () => this.liveProcesses()); }
 
   onApplicationShutdown(signal?: string) {
     this.shuttingDown = true;

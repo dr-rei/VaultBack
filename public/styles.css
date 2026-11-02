@@ -5931,6 +5931,12 @@ body .audit-panel-head h3 {
   margin-top: 7px;
 }
 
+body .audit-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 body .audit-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -6610,3 +6616,41 @@ body #restore-modal .form-shell > *,
 #restore-modal .form-actions { flex-wrap: wrap; }
 #restore-modal .form-actions button { white-space: normal; }
 #artifact-rehearsal-controls .form-actions { margin-inline: 0; padding-inline: 0; }
+
+/* Settings is a route-addressable workspace; each group keeps its existing controls mounted. */
+.settings-workspace { display: grid; grid-template-columns: minmax(190px, 230px) minmax(0, 1fr); gap: 20px; align-items: start; }
+.settings-navigation { position: sticky; top: 16px; display: grid; gap: 4px; padding: 10px; border: 1px solid var(--ui-line, var(--line)); border-radius: 12px; background: var(--ui-surface, var(--panel)); }
+.settings-navigation a { display: flex; align-items: center; min-height: 44px; padding: 9px 12px; border-radius: 8px; color: var(--ui-ink, var(--ink)); font-size: 13px; font-weight: 650; text-decoration: none; }
+.settings-navigation a:hover { background: var(--ui-teal-soft, #eaf4f0); }
+.settings-navigation a[aria-current="page"] { background: var(--ui-teal-soft, #eaf4f0); color: var(--ui-teal-dark, var(--teal-dark)); }
+.settings-navigation a:focus-visible, .cache-rule button:focus-visible { outline: 3px solid var(--ui-teal, var(--teal)); outline-offset: 2px; }
+.settings-content { min-width: 0; }
+.settings-section { min-width: 0; }
+.settings-section > h2 { margin: 0 0 6px; color: var(--ui-ink, var(--ink)); font-size: 22px; }
+.settings-section-description { margin: 0 0 16px; font-size: 13px; }
+.settings-section > .panel { margin: 0 0 16px; }
+.cache-enabled-option { display: flex; align-items: center; gap: 10px; min-height: 44px; font-weight: 650; }
+.cache-enabled-option input { width: 18px; height: 18px; accent-color: var(--ui-teal, var(--teal)); }
+.cache-assets-table-wrap { max-width: 100%; overflow-x: auto; }
+.cache-assets-table { min-width: 700px; }
+.cache-assets-table th, .cache-assets-table td { white-space: normal; overflow-wrap: anywhere; }
+.cache-assets-table code { font-size: 11px; }
+.cache-rules-block, .cache-assets-block { margin-top: 24px; }
+.cache-rules-block h4, .cache-assets-block h4 { margin: 0; color: var(--ui-ink, var(--ink)); font-size: 15px; }
+.cache-rule-list { display: grid; gap: 12px; margin: 0; padding-inline-start: 24px; }
+.cache-rule { min-width: 0; padding: 14px; border: 1px solid var(--ui-line, var(--line)); border-radius: 10px; background: var(--ui-surface, var(--panel)); color: var(--ui-ink, var(--ink)); }
+.cache-rule > div { margin-bottom: 12px; }
+.cache-rule b, .cache-rule small { display: block; }
+.cache-rule small { margin-top: 4px; color: var(--ui-muted, var(--muted)); }
+.cache-rule label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 700; color: var(--ui-ink, var(--ink)); }
+.cache-rule textarea { display: block; width: 100%; min-width: 0; margin-bottom: 10px; padding: 10px; border: 1px solid var(--ui-line, var(--line)); border-radius: 7px; background: var(--ui-surface-muted, var(--paper)); color: var(--ui-ink, var(--ink)); font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; overflow-wrap: anywhere; }
+.cache-rule-settings { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ui-muted, var(--muted)); font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.cache-instructions { display: grid; gap: 6px; margin-block: 14px 0; padding-inline-start: 20px; }
+.cache-instructions li { padding-inline-start: 3px; }
+@media (max-width: 760px) {
+  .settings-workspace { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .settings-navigation { position: static; display: flex; gap: 6px; overflow-x: auto; overscroll-behavior-inline: contain; }
+  .settings-navigation a { flex: 0 0 auto; }
+  .settings-content { width: 100%; }
+  .cache-rule { padding: 11px; }
+}

@@ -14,6 +14,7 @@ import { configuredEnvValue, isProductionEnvironment, rateLimitPerMinute } from 
 import { EnvironmentExceptionFilter } from './common/environment-exception.filter';
 import { SystemService } from './system/system.service';
 import { AuthService } from './auth/auth.service';
+import { AssetCacheService, buildVersionedAssetManifest, noStoreHeaders, rewriteVersionedAssetReferences, versionedAssetHeaders } from './system/asset-cache.service';
 
 type ApplicationProtocol = 'http' | 'https' | 'both';
 
@@ -61,6 +62,7 @@ async function bootstrap() {
   const server = app.getHttpAdapter().getInstance();
   const system = app.get(SystemService);
   const auth = app.get(AuthService);
+  const assetCache = app.get(AssetCacheService);
   server.addHook('onRequest', async (request, reply) => {
     if (!domains.includes(normalizeHost(request.headers?.host))) return reply.code(421).send({ message: 'Host not allowed' });
   });
@@ -68,15 +70,18 @@ async function bootstrap() {
     const requestPath = String(request.url || '').split('?')[0];
     if (requestPath.startsWith('/api/') && requestPath !== '/api/events' && !/^\/api\/auth\/(login|setup)$/.test(requestPath)) system.recordApiRequest(request);
   });
+  server.addHook('onRequest', async (request, reply) => {
+    const requestPath = String(request.url || '').split('?')[0];
+    if (requestPath === '/api' || requestPath.startsWith('/api/')) {
+      for (const [name, value] of Object.entries(noStoreHeaders())) reply.header(name, value);
+    }
+  });
   const swaggerEnabled = String(process.env.SWAGGER_ENABLED || '').trim().toLowerCase() === 'true';
   if (swaggerEnabled) {
     server.addHook('onRequest', async (request, reply) => {
       const requestPath = String(request.url || '').split('?')[0];
       if (!requestPath.startsWith('/api/docs')) return;
-      reply.header('Cache-Control', 'private, max-age=3600, must-revalidate');
-      reply.header('CDN-Cache-Control', 'no-store');
-      reply.header('Cloudflare-CDN-Cache-Control', 'no-store');
-      reply.header('Surrogate-Control', 'no-store');
+      for (const [name, value] of Object.entries(noStoreHeaders())) reply.header(name, value);
       reply.header('Vary', 'Cookie');
       const session = auth.getSession(request);
       if (!session || session.role !== 'admin') return reply.code(404).send({ message: 'Not found' });
@@ -108,24 +113,37 @@ async function bootstrap() {
   }
   const publicRoot = path.resolve(process.cwd(), 'public');
   const mime: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
-  const frontendRoutes = new Set(['/', '/overview', '/databases', '/connections', '/storage', '/schedules', '/jobs', '/history', '/runs', '/guide', '/help', '/settings', '/sessions']);
+  const versionedAssets = buildVersionedAssetManifest(publicRoot);
+  const versionedAssetsByPath = new Map(versionedAssets.map(asset => [asset.path, asset]));
+  const indexHtml = rewriteVersionedAssetReferences(fs.readFileSync(path.join(publicRoot, 'index.html'), 'utf8'), versionedAssets);
+  const frontendRoutes = new Set(['/', '/overview', '/databases', '/connections', '/storage', '/schedules', '/jobs', '/history', '/runs', '/recovery', '/guide', '/help', '/settings', '/sessions']);
   app.getHttpAdapter().getInstance().get('/*', async (request: any, reply: any) => {
     const requested = String(request.url || '/').split('?')[0];
     const normalizedPath = requested.replace(/\/+$/, '') || '/';
+    const noStore = () => { for (const [name, value] of Object.entries(noStoreHeaders())) reply.header(name, value); };
+    if (requested.startsWith('/_assets/')) {
+      const asset = versionedAssetsByPath.get(requested);
+      if (!asset) {
+        noStore();
+        return reply.code(404).type('text/plain; charset=utf-8').send('Not found');
+      }
+      for (const [name, value] of Object.entries(versionedAssetHeaders(assetCache.getConfig()))) reply.header(name, value);
+      return reply.type(mime[path.extname(asset.name).toLowerCase()] || 'application/octet-stream').send(asset.content);
+    }
     const relative = requested === '/' ? 'index.html' : requested.replace(/^\/+/, '');
     const candidate = path.resolve(publicRoot, relative);
     const safe = candidate === publicRoot || candidate.startsWith(`${publicRoot}${path.sep}`);
     const fileExists = safe && fs.existsSync(candidate) && fs.statSync(candidate).isFile();
     if (fileExists) {
       const extension = path.extname(candidate).toLowerCase();
-      if (['.html', '.js', '.css'].includes(extension)) reply.header('Cache-Control', 'no-store, max-age=0');
-      return reply.type(mime[extension] || 'application/octet-stream').send(fs.readFileSync(candidate));
+      noStore();
+      const content = path.resolve(candidate) === path.join(publicRoot, 'index.html') ? indexHtml : fs.readFileSync(candidate);
+      return reply.type(mime[extension] || 'application/octet-stream').send(content);
     }
-    if (normalizedPath.startsWith('/api/')) return reply.code(404).send({ message: 'Not found' });
-    const index = fs.readFileSync(path.join(publicRoot, 'index.html'));
-    reply.header('Cache-Control', 'no-store, max-age=0');
-    if (frontendRoutes.has(normalizedPath)) return reply.type(mime['.html']).send(index);
-    return reply.code(404).type(mime['.html']).send(index);
+    if (normalizedPath === '/api' || normalizedPath.startsWith('/api/')) return reply.code(404).send({ message: 'Not found' });
+    noStore();
+    if (frontendRoutes.has(normalizedPath)) return reply.type(mime['.html']).send(indexHtml);
+    return reply.code(404).type(mime['.html']).send(indexHtml);
   });
   app.enableShutdownHooks();
   const host = process.env.HOST || '127.0.0.1';

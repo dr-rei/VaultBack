@@ -11,7 +11,7 @@ import { ExecutionCancelDto, ExecutionRetryDto, SourceGroupDto } from '../common
 @Controller('api')
 export class ExecutionController {
   constructor(private readonly executions: ExecutionService, private readonly protection: ProtectionService, private readonly auth: AuthService, private readonly realtime: RealtimeService, private readonly outbox: NotificationOutboxService) {
-    realtime.registerSnapshotProvider('executions', () => executions.list());
+    realtime.registerSnapshotProvider('executions', () => executions.list({ page: 1, pageSize: 15 }));
     realtime.registerSnapshotProvider('protection', () => protection.assess(new Date()));
     realtime.registerSnapshotProvider('notification_deliveries', () => this.deliveries());
   }

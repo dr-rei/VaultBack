@@ -1,9 +1,12 @@
-const state = { csrf: '', userId: '', isPrimary: false, version: '', connections: [], recoveryConnections: [], storage: [], storageHealth: [], jobs: [], pageData: { connections: [], storage: [], jobs: [], runs: [] }, dashboard: { runs: [], runsMeta: {} }, backupActivity: null, operationsProcessesAt: null, recovery: null, processes: [], sessions: [], sessionInfo: null, audit: { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }, currentView: 'dashboard', dependencies: null, toolDiagnostics: null, toolDiagnosticsLoadedAt: 0, encryption: null, role: 'viewer', capacity: [], setupStatus: null, notifications: null, environment: null, update: null, users: [], list: { connections: { page: 1, pageSize: 25, search: '' }, storage: { page: 1, pageSize: 25, search: '' }, jobs: { page: 1, pageSize: 25, search: '' }, runs: { page: 1, pageSize: 25, search: '', status: '' }, users: { page: 1, pageSize: 25, search: '' }, sessions: { page: 1, pageSize: 25 } }, meta: {} };
+const state = { csrf: '', userId: '', isPrimary: false, version: '', connections: [], recoveryConnections: [], storage: [], storageHealth: [], jobs: [], pageData: { connections: [], storage: [], jobs: [], runs: [] }, dashboard: { runs: [], runsMeta: {} }, backupActivity: null, operationsProcessesAt: null, recovery: null, processes: [], sessions: [], sessionInfo: null, audit: { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }, currentView: 'dashboard', dependencies: null, toolDiagnostics: null, toolDiagnosticsLoadedAt: 0, encryption: null, role: 'viewer', capacity: [], setupStatus: null, notifications: null, notificationDeliveries: null, environment: null, update: null, users: [], list: { connections: { page: 1, pageSize: 25, search: '' }, storage: { page: 1, pageSize: 25, search: '' }, jobs: { page: 1, pageSize: 25, search: '' }, runs: { page: 1, pageSize: 25, search: '', status: '' }, users: { page: 1, pageSize: 25, search: '' }, sessions: { page: 1, pageSize: 25 } }, meta: {} };
 let liveProcessTimer = null;
 var updateCheckTimer = null;
 var updateCheckInFlight = false;
 var updateInstallInFlight = false;
 let realtimeSource = null;
+let liveOrchestrator = null;
+const settingsLoadRequests = new Map();
+let auditLoaded = false;
 var vaultbackCollectionEndpoints = { connections: '/api/connections', storage: '/api/storage', jobs: '/api/jobs', runs: '/api/runs', users: '/api/auth/users' };
 var vaultbackSearchTimers = {};
 var vaultbackJobRunPages = {};
@@ -229,6 +232,36 @@ async function checkStorageHealth(buttonOrId,id){const targetId=id||buttonOrId;c
 // Bodyless POST endpoints must not receive an empty JSON body declaration.
 async function api(url, options={}){const headers={...(options.headers||{})};if(options.body!==undefined)headers['Content-Type']='application/json';const opts={...options,headers};if(opts.method&&opts.method!=='GET'&&state.csrf&&!/\/api\/auth\/(?:login|setup)$/.test(url))opts.headers['x-csrf-token']=state.csrf;const r=await fetch(url,opts);let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(data.message||'Request failed');return data}
 
+function applyLiveExecutionSnapshot(payload) {
+  if (!payload || !Array.isArray(payload.items) || executionUi.page !== 1 || executionUi.status) return;
+  executionUi.listRequest++;
+  executionUi.listQuery = new URLSearchParams({ page: 1, pageSize: 15, status: '' }).toString();
+  executionUi.items = payload.items;
+  executionUi.pageCount = Math.max(1, Number(payload.pageCount) || 1);
+  executionUi.error = '';
+  executionUi.loaded = true;
+  document.getElementById('execution-list')?.removeAttribute('aria-busy');
+  renderExecutions();
+}
+
+function getLiveOrchestrator() {
+  if (liveOrchestrator || !window.VaultBackLive?.createLiveOrchestrator) return liveOrchestrator;
+  liveOrchestrator = window.VaultBackLive.createLiveOrchestrator({
+    getView: () => state.currentView,
+    getRole: () => state.role,
+    getSettingsSection: () => new URLSearchParams(window.location.search).get('section') || 'general',
+    getHistoryQuery: () => ({ page: executionUi.page, status: executionUi.status }),
+    hasSelectedExecution: () => Boolean(executionUi.selectedId),
+    applyExecutionSnapshot: applyLiveExecutionSnapshot,
+    refreshHistory: () => loadExecutions(),
+    refreshActive: () => loadActiveExecutions(),
+    refreshDetail: () => refreshExecutionDetail(),
+    storeNotificationDeliveries: payload => { state.notificationDeliveries = payload; },
+    renderNotificationDeliveries: payload => renderNotificationDeliveries(payload)
+  });
+  return liveOrchestrator;
+}
+
 function closeRealtime() {
   if (!realtimeSource) return;
   realtimeSource.close();
@@ -248,9 +281,10 @@ function connectRealtime() {
   const query = new URLSearchParams({ topics, sessionPage: String(sessionsOptions.page || 1), sessionPageSize: String(sessionsOptions.pageSize || 25), ratePage: String(usageOptions.page || 1), ratePageSize: String(usageOptions.pageSize || 25) });
   const source = new EventSource(`/api/events?${query}`, { withCredentials: true });
   realtimeSource = source;
-  source.addEventListener('executions',()=>{void loadExecutions();void loadActiveExecutions();void refreshExecutionDetail();});
+  source.addEventListener('connected', () => getLiveOrchestrator()?.onConnected());
+  source.addEventListener('executions', event => getLiveOrchestrator()?.onExecutions(realtimeJson(event)));
   source.addEventListener('protection',event=>{const payload=realtimeJson(event);if(Array.isArray(payload)){executionUi.protection=payload;renderProtection();}});
-  source.addEventListener('notification_deliveries',()=>{if(state.role==='admin')void loadNotificationDeliveries();});
+  source.addEventListener('notification_deliveries',event=>getLiveOrchestrator()?.onNotificationDeliveries(realtimeJson(event)));
   source.addEventListener('error', () => { state.operationsProcessesAt = null; renderOverviewOperations(); });
   source.addEventListener('processes', event => {
     const payload = realtimeJson(event);
@@ -623,6 +657,7 @@ function vaultbackRouteView() {
 }
 
 function setView(view, options = {}) {
+  const previousView = state.currentView;
   const restrictedBeforeAuth = view === 'sessions' && state.csrf && state.role !== 'admin';
   const nextView = restrictedBeforeAuth ? 'not-found' : (view === 'not-found' ? 'not-found' : (vaultbackViewPaths[view] ? view : 'not-found'));
   state.currentView = nextView;
@@ -645,19 +680,24 @@ function setView(view, options = {}) {
       window.history[method]({ view: nextView }, '', target);
     }
   }
-  if (nextView === 'dashboard') renderDashboard();
+  if (nextView === 'dashboard') { renderDashboard(); if (previousView !== 'dashboard' && state.csrf) void loadActiveExecutions(); }
   if (nextView === 'connections') renderConnections();
   if (nextView === 'storage') renderStorage();
   if (nextView === 'jobs') renderJobs();
   if (nextView === 'runs') {renderRuns();if(state.csrf){void loadExecutions();void loadProtection();}}
   if (nextView === 'recovery') { renderRecovery(); if (state.csrf) void loadRecovery(); }
   if (nextView === 'processes') { renderProcesses(); if (state.csrf) void loadLiveProcesses(); }
-  if (nextView === 'settings') renderSettings();
-  if (nextView === 'settings' || nextView === 'recovery') {
-    document.querySelector(`#view-${nextView} .section-jump-nav`)?.remove();
+  if (nextView === 'settings') {
+    if (previousView === 'settings' && typeof window.renderSettingsWorkspace === 'function') {
+      const section = window.renderSettingsWorkspace();
+      if (typeof window.activateSettingsSection === 'function') void window.activateSettingsSection(section);
+    } else renderSettings();
+  }
+  if (nextView === 'recovery') {
+    document.querySelector('#view-recovery .section-jump-nav')?.remove();
     initializeWorkspaceSections();
   }
-  if (nextView === 'sessions' && state.role === 'admin') { renderSessions(); if (state.csrf) void loadSessions(); }
+  if (nextView === 'sessions' && state.role === 'admin') { renderSessionsWithUsage(); if (state.csrf) void loadSessions(); }
   syncLiveProcessPolling();
   syncSessionsRefreshPolling();
 }
@@ -681,7 +721,28 @@ document.addEventListener('click', event => {
 
 function formatCapacity(value) { if (value === null || value === undefined) return 'Unavailable'; if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`; if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`; return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`; }
 function updateNotificationFields() { const telegram = $('#notification-provider').value === 'telegram'; $('#notification-webhook-fields').classList.toggle('hidden', telegram); $('#notification-telegram-fields').classList.toggle('hidden', !telegram); }
-async function saveNotifications() { const button = $('#save-notifications'); try { await withButtonBusy(button, async () => { await api('/api/settings/notifications', { method: 'POST', body: JSON.stringify({ enabled: $('#notification-enabled').checked, provider: $('#notification-provider').value, webhookUrl: $('#notification-webhook-url').value, webhookToken: $('#notification-webhook-token').value, botToken: $('#notification-bot-token').value, chatId: $('#notification-chat-id').value, events: { backup_success: $('#notify-success').checked, backup_failed: $('#notify-failed').checked, backup_recovered: $('#notify-recovered')?.checked, backup_missed_start: $('#notify-missed')?.checked, backup_long_running: $('#notify-long-running')?.checked, backup_stale: $('#notify-stale')?.checked, storage_failed: $('#notify-storage')?.checked, capacity_warning: $('#notify-capacity').checked } }) }); toast('Notification settings saved'); state.notifications = await api('/api/settings/notifications'); renderSettings(); }, 'Saving settings…'); } catch (e) { toast(e.message, true); } }
+function renderNotificationSettingsForm() {
+  const notificationForm = $('#notification-form');
+  if (!notificationForm || notificationForm.dataset.dirty) return;
+  const notification = state.notifications || {};
+  $('#notification-enabled').checked = Boolean(notification.enabled);
+  $('#notification-provider').value = notification.provider || 'discord';
+  $('#notify-success').checked = Boolean(notification.events?.backup_success);
+  $('#notify-failed').checked = notification.events?.backup_failed !== false;
+  $('#notify-retry').checked = notification.events?.backup_retry !== false;
+  $('#notify-recovered').checked = notification.events?.backup_recovered !== false;
+  $('#notify-missed').checked = notification.events?.backup_missed_start !== false;
+  $('#notify-long-running').checked = notification.events?.backup_long_running !== false;
+  $('#notify-stale').checked = notification.events?.backup_stale !== false;
+  $('#notify-storage').checked = notification.events?.storage_failed !== false;
+  $('#notify-capacity').checked = notification.events?.capacity_warning !== false;
+  updateNotificationFields();
+}
+async function loadNotificationSettings() {
+  try { state.notifications = await api('/api/settings/notifications'); renderNotificationSettingsForm(); }
+  catch (error) { toast(error.message || 'Unable to load notification settings', true); }
+}
+async function saveNotifications() { const button = $('#save-notifications'); try { await withButtonBusy(button, async () => { await api('/api/settings/notifications', { method: 'POST', body: JSON.stringify({ enabled: $('#notification-enabled').checked, provider: $('#notification-provider').value, webhookUrl: $('#notification-webhook-url').value, webhookToken: $('#notification-webhook-token').value, botToken: $('#notification-bot-token').value, chatId: $('#notification-chat-id').value, events: { backup_success: $('#notify-success').checked, backup_failed: $('#notify-failed').checked, backup_recovered: $('#notify-recovered')?.checked, backup_missed_start: $('#notify-missed')?.checked, backup_long_running: $('#notify-long-running')?.checked, backup_stale: $('#notify-stale')?.checked, storage_failed: $('#notify-storage')?.checked, capacity_warning: $('#notify-capacity').checked } }) }); toast('Notification settings saved'); state.notifications = await api('/api/settings/notifications'); $('#notification-form').dataset.dirty = ''; renderSettings(); }, 'Saving settings…'); } catch (e) { toast(e.message, true); } }
 function renderEnvironmentSettings() {
   const panel = $('#environment-panel');
   if (!panel) return;
@@ -695,7 +756,7 @@ function renderEnvironmentSettings() {
   const save = $('#save-environment');
   const apply = $('#apply-environment');
   const configured = info?.configuredEnvironment || info?.currentEnvironment || 'development';
-  if (select) { select.value = configured; select.disabled = !state.isPrimary || !info; }
+  if (select) { if (!select.dataset.dirty) select.value = configured; select.disabled = !state.isPrimary || !info; }
   if (current) current.textContent = info?.currentEnvironment ? info.currentEnvironment[0].toUpperCase() + info.currentEnvironment.slice(1) : 'Checking…';
   if (badge) { badge.textContent = info?.pendingRestart ? 'Restart required' : info?.currentEnvironment ? info.currentEnvironment[0].toUpperCase() + info.currentEnvironment.slice(1) : 'Checking'; badge.className = `tag ${info?.pendingRestart ? 'update-available' : ''}`; }
   if (status) { status.classList.toggle('hidden', !info?.pendingRestart); status.textContent = info?.pendingRestart ? `Saved as ${configured}. Restart VaultBack to activate this environment.` : ''; }
@@ -707,7 +768,7 @@ async function saveEnvironment(restart = false) {
   const button = restart ? $('#apply-environment') : $('#save-environment');
   const environment = $('#runtime-environment')?.value || 'development';
   if (restart && !await appDialog({ title: 'Apply environment and restart?', message: `VaultBack will switch to ${environment} mode and restart through the configured process manager. Production hides detailed server errors and enables rate limiting; development does not.`, confirmText: 'Save and restart', cancelText: 'Cancel', danger: environment === 'production' })) return;
-  try { await withButtonBusy(button, async () => { const result = await api('/api/settings/environment', { method: 'POST', body: JSON.stringify({ environment, restart }) }); state.environment = result; renderEnvironmentSettings(); toast(result.message || (restart ? 'Environment saved; restart requested' : 'Environment saved')); }, restart ? 'Applying…' : 'Saving…'); } catch (e) { toast(e.message, true); }
+  try { await withButtonBusy(button, async () => { const result = await api('/api/settings/environment', { method: 'POST', body: JSON.stringify({ environment, restart }) }); state.environment = result; $('#runtime-environment').dataset.dirty = ''; renderEnvironmentSettings(); toast(result.message || (restart ? 'Environment saved; restart requested' : 'Environment saved')); }, restart ? 'Applying…' : 'Saving…'); } catch (e) { toast(e.message, true); }
 }
 async function deleteUser(id) { if (!await confirmAction('Remove this user account? Existing sessions for the account will stop working.','Delete user')) return; const button=document.querySelector(`button[onclick="deleteUser('${encodeURIComponent(id)}')"]`); try { await withButtonBusy(button, async()=>{ await api(`/api/auth/users/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadCollection('users'); toast('User deleted'); }, 'Deleting…'); } catch (e) { toast(e.message, true); } }
 async function exportSafeConfig() { try { const data = await api('/api/settings/export'); const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `vaultback-config-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(link.href); toast('Safe configuration exported'); } catch (e) { toast(e.message, true); } }
@@ -794,7 +855,7 @@ async function loadCollection(key) {
   if (key === 'storage') renderStorage();
   if (key === 'jobs') renderJobs();
   if (key === 'runs') renderRuns();
-  if (key === 'users') renderSettings();
+  if (key === 'users') renderSettingsUserList();
   renderCollectionPagination(key, key + '-pagination');
   if (key === 'users') renderCollectionPagination(key, 'users-pagination');
 }
@@ -1171,7 +1232,7 @@ function setMobileSidebarOpen(open, restoreFocus = false) {
   shell.classList.toggle('sidebar-open', next);
   document.body.classList.toggle('sidebar-scroll-lock', next);
   if (sidebar) {
-    sidebar.setAttribute('aria-hidden', String(!next));
+    sidebar.setAttribute('aria-hidden', String(!next && isMobileSidebarViewport()));
     if (next) {
       sidebar.setAttribute('role', 'dialog');
       sidebar.setAttribute('aria-modal', 'true');
@@ -1547,13 +1608,14 @@ async function revokeFleetServer(id) { if (!await appDialog({ title: 'Revoke thi
 
 async function loadAll() {
   await Promise.all(['connections', 'storage', 'jobs', 'runs'].map(loadCollection).concat(loadBackupActivity(), loadRecovery(), loadReferenceData(), loadDashboardRuns()));
-  await Promise.all([loadExecutions(),loadActiveExecutions(),loadProtection()]);
-  if(state.role==='admin'){void loadSourceGroups();void loadNotificationDeliveries();}
+  const executionLoads = [];
+  if (state.currentView === 'dashboard') executionLoads.push(loadActiveExecutions());
+  if (state.currentView === 'runs') executionLoads.push(loadExecutions(), loadProtection());
+  await Promise.all(executionLoads);
   try { state.storageHealth = await api('/api/storage/health'); } catch { state.storageHealth = []; }
-  if (state.role === 'admin') await loadCollection('users'); else state.users = [];
+  if (state.role !== 'admin') state.users = [];
   updateRoleUi();
   syncUpdateCheckPolling();
-  if (state.role === 'admin' && !state.update) void loadUpdateInfo();
   if (state.currentView === 'sessions' && state.role !== 'admin') { window.history.replaceState({}, '', '/'); setView('not-found', { history: false }); return; }
   renderDashboard();
   if (state.currentView === 'connections') renderConnections();
@@ -1628,7 +1690,8 @@ function ensureAuditPanel() {
   const panel = document.createElement('div');
   panel.id = 'audit-panel';
   panel.className = 'panel admin-only-setting';
-  panel.innerHTML = '<div class="panel-head audit-panel-head"><div><span class="kicker">ACCOUNTABILITY</span><h3>Audit log</h3></div><span id="audit-count-badge" class="tag">Loading</span></div><p class="hint">A chronological record of administrative actions. Passwords, tokens, and encrypted secret values are never stored here.</p><div class="audit-summary"><div class="audit-summary-item"><span>Events recorded</span><strong id="audit-total">—</strong></div><div class="audit-summary-item"><span>Visible on this page</span><strong id="audit-visible">—</strong></div><div class="audit-summary-item audit-summary-note"><span>Retention</span><strong>Latest events</strong></div></div><div id="audit-list" class="audit-list" role="list" aria-live="polite"><div class="empty">Loading audit events…</div></div><div id="audit-pagination"></div>';
+  panel.innerHTML = '<div class="panel-head audit-panel-head"><div><span class="kicker">ACCOUNTABILITY</span><h3>Audit log</h3></div><div class="audit-panel-actions"><span id="audit-count-badge" class="tag">Loading</span><button type="button" class="secondary" id="refresh-audit">Refresh</button></div></div><p class="hint">A chronological record of administrative actions. Passwords, tokens, and encrypted secret values are never stored here.</p><div class="audit-summary"><div class="audit-summary-item"><span>Events recorded</span><strong id="audit-total">—</strong></div><div class="audit-summary-item"><span>Visible on this page</span><strong id="audit-visible">—</strong></div><div class="audit-summary-item audit-summary-note"><span>Retention</span><strong>Latest events</strong></div></div><div id="audit-list" class="audit-list" role="list" aria-live="polite"><div class="empty">Loading audit events…</div></div><div id="audit-pagination"></div>';
+  panel.querySelector('#refresh-audit')?.addEventListener('click', () => { auditLoaded = false; void loadAudit(); });
   settingsView.appendChild(panel);
 }
 
@@ -1661,14 +1724,28 @@ function auditEventMarkup(item) {
 }
 
 async function loadAudit() {
-  try { state.audit = await api(`/api/settings/audit?page=${state.audit.page}&pageSize=${state.audit.pageSize}`); } catch { state.audit = { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 }; }
+  let errorMessage = '';
+  try { state.audit = await api(`/api/settings/audit?page=${state.audit.page}&pageSize=${state.audit.pageSize}`); auditLoaded = true; }
+  catch (error) {
+    auditLoaded = false;
+    errorMessage = String(error?.message || 'Request failed');
+    state.audit = { items: [], total: 0, page: 1, pageSize: 25, pageCount: 1 };
+  }
   const list = $('#audit-list');
   if (!list) return;
+  const badge = $('#audit-count-badge');
+  if (errorMessage) {
+    $('#audit-total')?.replaceChildren(document.createTextNode('—'));
+    $('#audit-visible')?.replaceChildren(document.createTextNode('—'));
+    if (badge) badge.textContent = 'Unavailable';
+    list.innerHTML = `<div class="empty audit-empty" role="alert">Could not load the audit log: ${esc(errorMessage)}. Select Refresh to try again.</div>`;
+    $('#audit-pagination')?.replaceChildren();
+    return;
+  }
   const total = Number(state.audit.total || 0);
   const visible = state.audit.items.length;
   $('#audit-total')?.replaceChildren(document.createTextNode(String(total)));
   $('#audit-visible')?.replaceChildren(document.createTextNode(String(visible)));
-  const badge = $('#audit-count-badge');
   if (badge) badge.textContent = `${total} event${total === 1 ? '' : 's'}`;
   list.innerHTML = state.audit.items.map(auditEventMarkup).join('') || '<div class="empty audit-empty">No audit events yet.</div>';
   const pagination = $('#audit-pagination');
@@ -1705,22 +1782,14 @@ var vaultbackBaseRenderSettings = function() {
   $('#restart-panel')?.classList.toggle('hidden', !isAdmin);
   $('#user-list').innerHTML = '';
   $('#capacity-list').innerHTML = state.capacity.map(item => `<div class="capacity-row"><div><b>${esc(item.name)}</b><small>${formatCapacity(item.freeBytes)} free of ${formatCapacity(item.totalBytes)}</small></div><strong class="capacity-value ${item.usedPercent >= 85 ? 'warning' : ''}">${item.usedPercent === null ? '—' : `${item.usedPercent}% used`}</strong></div>`).join('') || '<div class="empty">Capacity information is unavailable.</div>';
-  const notification = state.notifications || {};
-  $('#notification-enabled').checked = Boolean(notification.enabled);
-  $('#notification-provider').value = notification.provider || 'discord';
-  $('#notify-success').checked = Boolean(notification.events?.backup_success);
-  $('#notify-failed').checked = notification.events?.backup_failed !== false;
-  $('#notify-retry').checked = notification.events?.backup_retry !== false;
-  $('#notify-recovered').checked=notification.events?.backup_recovered!==false;
-  $('#notify-missed').checked=notification.events?.backup_missed_start!==false;
-  $('#notify-long-running').checked=notification.events?.backup_long_running!==false;
-  $('#notify-stale').checked = notification.events?.backup_stale !== false;
-  $('#notify-storage').checked = notification.events?.storage_failed !== false;
-  $('#notify-capacity').checked = notification.events?.capacity_warning !== false;
-  updateNotificationFields();
+  const notificationForm = $('#notification-form');
+  renderNotificationSettingsForm();
   if (!document.body.dataset.settingsBound) {
     document.body.dataset.settingsBound = '1';
+    notificationForm?.addEventListener('input', () => { notificationForm.dataset.dirty = '1'; });
+    notificationForm?.addEventListener('change', () => { notificationForm.dataset.dirty = '1'; });
     $('#notification-provider').addEventListener('change', updateNotificationFields);
+    $('#runtime-environment')?.addEventListener('change', event => { event.currentTarget.dataset.dirty = '1'; });
     $('#save-notifications').onclick = saveNotifications;
     $('#save-environment').onclick = () => void saveEnvironment(false);
     $('#apply-environment').onclick = () => void saveEnvironment(true);
@@ -1740,21 +1809,17 @@ var vaultbackBaseRenderSettings = function() {
     $('#install-update')?.addEventListener('click', () => void startUpdate());
   }
   renderUpdatePanel();
-  if (isAdmin && !state.environment) void loadEnvironmentSettings();
-  if (!state.update) void loadUpdateInfo();
   const dependencyPanel = $('#dependency-tools-panel');
   const dependencyHints = dependencyPanel?.querySelectorAll('.hint');
   if (dependencyHints?.[0]) dependencyHints[0].textContent = 'VaultBack uses the native Node driver for connection tests and database discovery. Bundled client and dump utilities are used for backups and restores.';
   if (dependencyHints?.[1]) dependencyHints[1].textContent = 'Repair removes and replaces only the platform-specific portable tools managed by VaultBack. Operating-system installations and PATH entries are ignored.';
   bindDependencyToolsControls();
-  void loadDependencyDiagnostics();
   const migration = $('#migration-panel');
   if (migration) migration.classList.toggle('hidden', !isAdmin);
   $('#notification-escalation-panel')?.classList.toggle('hidden', !isAdmin);
   $('#audit-panel')?.classList.toggle('hidden', !isAdmin);
   $('#artifact-reconcile-panel')?.classList.toggle('hidden', !isAdmin);
   if (!document.body.dataset.artifactReconcileBound) { document.body.dataset.artifactReconcileBound = '1'; $('#reconcile-artifacts')?.addEventListener('click', () => void reconcileBackupArtifacts()); }
-  if (isAdmin) void loadAudit();
 };
 
 function userManagementActions(user) {
@@ -1766,10 +1831,49 @@ function userManagementActions(user) {
 function renderSettings() {
   if (typeof vaultbackBaseRenderSettings !== 'function') return;
   vaultbackBaseRenderSettings();
+  const section = typeof window.renderSettingsWorkspace === 'function' ? window.renderSettingsWorkspace() : 'general';
+  renderSettingsUserList();
+  if (typeof window.activateSettingsSection === 'function') void window.activateSettingsSection(section);
+}
+
+function renderSettingsUserList() {
   if (state.role !== 'admin') return;
   const list = $('#user-list');
   if (!list) return;
   list.innerHTML = state.users.map(user => `<div class="user-row"><div><b>${esc(user.username)}</b><small>${esc(user.role)} · last login ${user.lastLoginAt ? fmtDate(user.lastLoginAt) : 'never'}</small></div><div class="user-actions">${userManagementActions(user)}</div></div>`).join('') || '<div class="empty">No user accounts match this search.</div>';
+}
+
+function loadSettingsSection(section) {
+  if (!state.csrf || state.currentView !== 'settings') return Promise.resolve();
+  const runOnce = (key, work) => {
+    if (settingsLoadRequests.has(key)) return settingsLoadRequests.get(key);
+    const request = Promise.resolve().then(work).catch(() => {}).finally(() => settingsLoadRequests.delete(key));
+    settingsLoadRequests.set(key, request);
+    return request;
+  };
+  if (section === 'general' && state.role === 'admin' && (!state.environment || state.environment.error)) {
+    return runOnce('environment', loadEnvironmentSettings);
+  }
+  if (section === 'notifications' && state.role === 'admin') {
+    const requests = [];
+    if (!state.notifications) requests.push(runOnce('notification-settings', loadNotificationSettings));
+    if (!state.notificationDeliveries) requests.push(runOnce('notification-deliveries', loadNotificationDeliveries));
+    return Promise.all(requests);
+  }
+  if (section === 'execution' && state.role === 'admin' && !state.sourceGroupsLoaded) {
+    return runOnce('source-groups', loadSourceGroups);
+  }
+  if (section === 'maintenance' && state.role === 'admin') {
+    if (!state.update) void runOnce('update', loadUpdateInfo);
+    void loadDependencyDiagnostics();
+  }
+  if (section === 'access' && state.role === 'admin' && !state.meta.users) {
+    return runOnce('users', () => loadCollection('users'));
+  }
+  if (section === 'audit' && state.role === 'admin' && !auditLoaded) {
+    return runOnce('audit', loadAudit);
+  }
+  return Promise.resolve();
 }
 
 function openUserModal(user = null) {
@@ -2004,7 +2108,7 @@ if ($('#api-usage-page-size')) $('#api-usage-page-size').onchange = event => {
 
 // Section links keep long administration pages navigable without hiding evidence.
 function initializeWorkspaceSections() {
-  for (const view of ['settings', 'recovery']) {
+  for (const view of ['recovery']) {
     const root = document.getElementById(`view-${view}`);
     if (!root || root.querySelector('.section-jump-nav')) continue;
     const sections = [...root.querySelectorAll('.panel')].filter(panel => panel.querySelector('h3'));

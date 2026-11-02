@@ -7,8 +7,9 @@ describe('execution HTTP authorization and admission', () => {
   function setup() {
     const executions = {enqueue:jest.fn().mockReturnValue({id:'e',status:'queued'}),retry:jest.fn(),retryHistoricalRun:jest.fn().mockReturnValue({id:'retry-execution',status:'queued'}),cancel:jest.fn(),moveAhead:jest.fn(),list:jest.fn(),get:jest.fn().mockReturnValue({id:'e'}),audit:jest.fn()};
     const auth = {requireAdmin:jest.fn().mockReturnValue({user_id:'admin',role:'admin'}),requireSession:jest.fn().mockReturnValue({user_id:'viewer',role:'viewer'})};
-    const controller = new ExecutionController(executions as any,{} as any,auth as any,{registerSnapshotProvider:jest.fn()} as any,{list:jest.fn()} as any);
-    return {controller,executions,auth};
+    const realtime = {registerSnapshotProvider:jest.fn()};
+    const controller = new ExecutionController(executions as any,{} as any,auth as any,realtime as any,{list:jest.fn()} as any);
+    return {controller,executions,auth,realtime};
   }
   it('returns a queued acknowledgement with the authenticated actor', () => {
     const {controller,executions,auth} = setup();
@@ -43,6 +44,13 @@ describe('execution HTTP authorization and admission', () => {
     expect(() => controller.list(request)).toThrow('Invalid execution pagination');
     expect(auth.requireSession).toHaveBeenCalledWith(request);
     expect(executions.list).toHaveBeenCalledWith(request.query);
+  });
+  it('publishes the same first-page shape the History view expects', () => {
+    const {executions,realtime} = setup();
+    const provider = realtime.registerSnapshotProvider.mock.calls.find(([topic]) => topic === 'executions')?.[1];
+    expect(provider).toBeDefined();
+    provider();
+    expect(executions.list).toHaveBeenCalledWith({page:1,pageSize:15});
   });
   it('retries only the explicit selection using the authenticated actor', () => {
     const {controller,executions} = setup();
