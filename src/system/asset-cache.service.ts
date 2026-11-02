@@ -36,6 +36,8 @@ const NO_STORE_HEADERS = Object.freeze({
 
 function validTtl(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= MIN_TTL_SECONDS && Number(value) <= MAX_TTL_SECONDS;
+}
+
 export function normalizeAssetCacheConfig(value: unknown): AssetCacheConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new BadRequestException('Cache settings must be an object');
   const candidate = value as Record<string, unknown>;

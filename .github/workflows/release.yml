@@ -56,7 +56,20 @@ jobs:
             --artifact "win32-x64=release/VaultBack-${GITHUB_REF_NAME#v}-win32-x64.tar.gz"
 
       - name: Create release notes
-        run: node scripts/create-release-notes.mjs --version "${GITHUB_REF_NAME#v}" --tag "$GITHUB_REF_NAME" --output release/RELEASE_NOTES.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          previous_release="$(gh release list --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          previous_args=()
+          if [ -n "$previous_release" ]; then
+            previous_args=(--previous-tag "$previous_release")
+          fi
+          node scripts/create-release-notes.mjs \
+            --version "${GITHUB_REF_NAME#v}" \
+            --tag "$GITHUB_REF_NAME" \
+            "${previous_args[@]}" \
+            --output release/RELEASE_NOTES.md
 
       - name: Publish GitHub release
         env:
