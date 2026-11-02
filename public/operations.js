@@ -191,11 +191,119 @@ async function loadSourceGroups() {
   let root=document.getElementById('source-groups-panel');
   if(!root){root=document.createElement('section');root.id='source-groups-panel';root.className='panel admin-only-setting';document.getElementById('view-settings').appendChild(root);}
   if(state.currentView==='settings')window.renderSettingsWorkspace?.();
-  try {const result=await api('/api/source-groups');state.sourceGroupsLoaded=true;if(state.currentView==='settings')window.renderSettingsWorkspace?.();root.innerHTML=`<div class="panel-head"><h3>Execution concurrency</h3></div><p class="hint">Aliases on the same physical server should share one source group. Active work retains its current allocation.</p><label for="global-concurrency">Global concurrent pairs</label><input id="global-concurrency" type="number" min="1" max="32" value="${Number(result.globalConcurrency||4)}"><button class="small-button" id="save-global-concurrency">Save global limit</button>${result.dispatchError?`<p role="alert">${esc(result.dispatchError)}</p>`:''}<div id="source-group-list">${result.items.map((group,index)=>`<form class="execution-group-form" data-group-index="${index}"><label>Source group name<input name="name" value="${esc(group.name)}" required></label><label>Concurrent pairs<input name="concurrency" type="number" min="1" max="8" value="${Number(group.concurrency||1)}" required></label><small>Effective limit: ${Number(group.effectiveConcurrency)}</small><fieldset><legend>Connection aliases${group.id.startsWith('host:')?' (automatic host membership; read only)':''}</legend>${state.connections.map(connection=>`<label><input type="checkbox" name="connectionIds" value="${esc(connection.id)}" ${group.connectionIds.includes(connection.id)?'checked':''} ${group.id.startsWith('host:')?'disabled':''}> ${esc(connection.name)}</label>`).join('')}</fieldset><button class="small-button" type="submit">Save group</button></form>`).join('')}</div>`;
-    document.getElementById('save-global-concurrency').onclick=async()=>{try{await api('/api/source-groups',{method:'POST',body:JSON.stringify({globalConcurrency:Number(document.getElementById('global-concurrency').value)})});toast('Global limit saved');await loadSourceGroups();}catch(error){toast(error.message,true);}};
-    const newGroup=document.createElement('form');newGroup.className='execution-group-form';newGroup.dataset.groupIndex='-1';newGroup.innerHTML=`<label>New source group name<input name="name" required></label><label>Concurrent pairs<input name="concurrency" type="number" min="1" max="8" value="1" required></label><fieldset><legend>Connection aliases to group</legend>${state.connections.map(connection=>`<label><input type="checkbox" name="connectionIds" value="${esc(connection.id)}"> ${esc(connection.name)}</label>`).join('')}</fieldset><button class="small-button" type="submit">Create source group</button>`;root.appendChild(newGroup);
-    root.querySelectorAll('form').forEach(form=>form.onsubmit=async event=>{event.preventDefault();const group=result.items[Number(form.dataset.groupIndex)]||{};try{await api('/api/source-groups',{method:'POST',body:JSON.stringify({id:group.id,name:form.elements.name.value,concurrency:Number(form.elements.concurrency.value),connectionIds:group.id?.startsWith('host:')?group.connectionIds:[...form.querySelectorAll('[name=connectionIds]:checked')].map(input=>input.value)})});toast('Source group saved');await loadSourceGroups();}catch(error){toast(error.message,true);}});
-  }catch(error){root.innerHTML=`<h3>Execution concurrency</h3><p role="alert">${esc(error.message)}</p>`;}
+  try {
+    const result=await api('/api/source-groups');
+    state.sourceGroupsLoaded=true;
+    if(state.currentView==='settings')window.renderSettingsWorkspace?.();
+    const groups=Array.isArray(result.items)?result.items:[];
+    const connections=Array.isArray(state.connections)?state.connections:[];
+    const aliasesMarkup=(group,isAutomatic)=>connections.length
+      ? `<div class="execution-alias-list">${connections.map(connection=>`<label class="execution-alias-option"><input type="checkbox" name="connectionIds" value="${esc(connection.id)}" ${(Array.isArray(group.connectionIds)?group.connectionIds:[]).includes(connection.id)?'checked':''} ${isAutomatic?'disabled':''}><span>${esc(connection.name)}</span></label>`).join('')}</div>`
+      : '<p class="execution-empty-aliases">No database connections are available yet. Add a connection before assigning aliases to this group.</p>';
+    const groupMarkup=groups.map((group,index)=>{
+      const isAutomatic=String(group.id||'').startsWith('host:');
+      const effective=Number(group.effectiveConcurrency||group.concurrency||1);
+      return `<form class="execution-group-form" data-group-index="${index}">
+        <div class="execution-group-heading">
+          <div><span class="execution-group-index">SOURCE GROUP ${index+1}</span><p class="hint">Aliases in the same source group share this concurrency cap.</p></div>
+          <span class="execution-effective-limit"><strong>${Number.isFinite(effective)?effective:1}</strong><span>effective pairs</span></span>
+        </div>
+        <div class="execution-group-fields">
+          <label class="execution-field">Group name<input name="name" value="${esc(group.name)}" autocomplete="off" required></label>
+          <label class="execution-field">Maximum concurrent pairs<span class="execution-field-hint">Per source · 1 to 8</span><input name="concurrency" type="number" min="1" max="8" step="1" value="${Number(group.concurrency||1)}" required></label>
+        </div>
+        <fieldset class="execution-aliases" aria-describedby="execution-alias-help-${index}">
+          <legend>Connection aliases${isAutomatic?' <span class="execution-readonly-tag">Automatic</span>':''}</legend>
+          <p class="hint" id="execution-alias-help-${index}">${isAutomatic?'Aliases are grouped automatically by host and cannot be changed here.':'Select every connection alias that reaches this physical source.'}</p>
+          ${aliasesMarkup(group,isAutomatic)}
+        </fieldset>
+        <p class="execution-form-feedback" role="status" hidden></p>
+        <div class="execution-group-actions"><button class="secondary" type="submit">Save source group</button></div>
+      </form>`;
+    }).join('');
+    root.innerHTML=`
+      <div class="execution-panel-heading">
+        <div><span class="kicker">EXECUTION POLICY</span><h3>Concurrency limits</h3></div>
+        <p class="hint">Control how many connection and storage pairs may run at once. Work already in progress keeps its current allocation.</p>
+      </div>
+      ${result.dispatchError?`<p class="callout" role="alert">${esc(result.dispatchError)}</p>`:''}
+      <section class="execution-global-limit" aria-labelledby="execution-global-heading">
+        <div><h4 id="execution-global-heading">Global limit</h4><p class="hint" id="execution-global-help">Maximum active backup pairs across all sources and storage targets.</p></div>
+        <div class="execution-global-controls">
+          <label class="execution-field" for="global-concurrency">Concurrent pairs<input id="global-concurrency" type="number" min="1" max="32" step="1" value="${Number(result.globalConcurrency||4)}" aria-describedby="execution-global-help" required></label>
+          <button class="secondary" type="button" id="save-global-concurrency">Save global limit</button>
+        </div>
+        <p class="execution-form-feedback" id="global-concurrency-feedback" role="status" hidden></p>
+      </section>
+      <section id="source-group-list" aria-labelledby="execution-groups-heading">
+        <div class="execution-section-heading"><div><h4 id="execution-groups-heading">Source groups</h4><p class="hint">Group aliases that connect to the same physical database server.</p></div><span class="execution-group-count">${groups.length} ${groups.length===1?'group':'groups'}</span></div>
+        ${groups.length?`<div class="execution-group-list">${groupMarkup}</div>`:'<div class="execution-empty-state"><strong>No source groups configured</strong><p>Create a group to apply a per-source concurrency cap. You can assign connection aliases now or add them later.</p></div>'}
+      </section>
+      <section class="execution-create-panel" aria-labelledby="execution-create-heading">
+        <div class="execution-section-heading"><div><h4 id="execution-create-heading">Add a source group</h4><p class="hint">Give it a clear name, set its pair limit, then assign the connection aliases for that server.</p></div></div>
+        <form class="execution-group-form execution-group-form--create" data-group-index="-1">
+          <div class="execution-group-fields">
+            <label class="execution-field">Group name<input name="name" placeholder="For example, production-primary" autocomplete="off" required></label>
+            <label class="execution-field">Maximum concurrent pairs<span class="execution-field-hint">Per source · 1 to 8</span><input name="concurrency" type="number" min="1" max="8" step="1" value="1" required></label>
+          </div>
+          <fieldset class="execution-aliases" aria-describedby="execution-alias-help-new">
+            <legend>Connection aliases</legend>
+            <p class="hint" id="execution-alias-help-new">Select every configured connection that reaches this physical source.</p>
+            ${aliasesMarkup({connectionIds:[]},false)}
+          </fieldset>
+          <p class="execution-form-feedback" role="status" hidden></p>
+          <div class="execution-group-actions"><button class="primary" type="submit">Create source group</button></div>
+        </form>
+      </section>`;
+    document.getElementById('save-global-concurrency').onclick=async()=>{
+      const button=document.getElementById('save-global-concurrency');
+      const input=document.getElementById('global-concurrency');
+      const feedback=document.getElementById('global-concurrency-feedback');
+      if(!input.reportValidity()){input.focus();return;}
+      button.disabled=true;
+      button.textContent='Saving…';
+      feedback.hidden=true;
+      try {
+        await api('/api/source-groups',{method:'POST',body:JSON.stringify({globalConcurrency:Number(input.value)})});
+        toast('Global limit saved');
+        await loadSourceGroups();
+      } catch(error) {
+        feedback.textContent=error.message||'Could not save the global limit. Check the value and try again.';
+        feedback.hidden=false;
+        feedback.setAttribute('role','alert');
+        toast(feedback.textContent,true);
+      } finally {
+        if(button.isConnected){button.disabled=false;button.textContent='Save global limit';}
+      }
+    };
+    root.querySelectorAll('.execution-group-form').forEach(form=>form.onsubmit=async event=>{
+      event.preventDefault();
+      const group=groups[Number(form.dataset.groupIndex)]||{};
+      const name=form.elements.namedItem('name');
+      const concurrency=form.elements.namedItem('concurrency');
+      const button=form.querySelector('button[type="submit"]');
+      const feedback=form.querySelector('.execution-form-feedback');
+      if(!form.reportValidity()){form.querySelector(':invalid')?.focus();return;}
+      button.disabled=true;
+      button.textContent=form.dataset.groupIndex==='-1'?'Creating…':'Saving…';
+      feedback.hidden=true;
+      try {
+        await api('/api/source-groups',{method:'POST',body:JSON.stringify({id:group.id,name:name.value,concurrency:Number(concurrency.value),connectionIds:group.id?.startsWith('host:')?group.connectionIds:[...form.querySelectorAll('[name=connectionIds]:checked')].map(input=>input.value)})});
+        toast(form.dataset.groupIndex==='-1'?'Source group created':'Source group saved');
+        await loadSourceGroups();
+      } catch(error) {
+        feedback.textContent=error.message||'Could not save this source group. Check the fields and try again.';
+        feedback.hidden=false;
+        feedback.setAttribute('role','alert');
+        toast(feedback.textContent,true);
+      } finally {
+        if(button.isConnected){button.disabled=false;button.textContent=form.dataset.groupIndex==='-1'?'Create source group':'Save source group';}
+      }
+    });
+  }catch(error){
+    root.innerHTML=`<div class="execution-load-error"><div><h3>Execution settings unavailable</h3><p role="alert">${esc(error.message||'Could not load concurrency settings.')}</p></div><button class="secondary" type="button" id="retry-source-groups">Try again</button></div>`;
+    document.getElementById('retry-source-groups')?.addEventListener('click',()=>void loadSourceGroups());
+  }
 }
 function renderNotificationDeliveries(result) {
   if(state.role!=='admin'||!result)return;
